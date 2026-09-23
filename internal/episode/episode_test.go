@@ -24,12 +24,16 @@ func TestProjectWritesEvidenceLinkedEpisodeAndContinuation(t *testing.T) {
 		}
 	}
 	calls := 0
-	extract := func(_ context.Context, _ string, _ string, _ string, _ string, out any) (llm.Result, error) {
+	extract := func(_ context.Context, _ string, _ string, prompt string, _ string, out any) (llm.Result, error) {
 		calls++
+		evidence := "codex:session-#L1"
+		if strings.Contains(prompt, "#L2") {
+			evidence = "codex:session-#L2"
+		}
 		b, _ := json.Marshal(map[string]any{
-			"title": "Continue Spindle", "purpose": map[string]any{"text": "Continue the Spindle work.", "evidence": []string{"codex:session-#L1"}},
-			"observations": []map[string]any{{"text": "The user asked to continue.", "evidence": []string{"codex:session-#L1", "not-in-source"}}},
-			"outputs":      []any{}, "open_threads": []map[string]any{{"text": "Decide the next slice.", "evidence": []string{"codex:session-#L1"}}}, "references": []any{},
+			"title": "Continue Spindle", "purpose": map[string]any{"text": "Continue the Spindle work.", "evidence": []string{evidence}},
+			"observations": []map[string]any{{"text": "The user asked to continue.", "evidence": []string{evidence, "not-in-source"}}},
+			"outputs":      []any{}, "open_threads": []map[string]any{{"text": "Decide the next slice.", "evidence": []string{evidence}}}, "references": []any{},
 		})
 		_ = json.Unmarshal(b, out)
 		return llm.Result{}, nil
@@ -102,5 +106,61 @@ func TestObserverSchemaHasValidRequiredShape(t *testing.T) {
 		if _, ok := property["required"].([]any); !ok && name == "purpose" {
 			t.Fatalf("purpose required = %#v", property["required"])
 		}
+	}
+}
+
+func TestProjectRetriesCitationEmptyObserverResult(t *testing.T) {
+	corpusRoot, outRoot := t.TempDir(), t.TempDir()
+	item := corpus.Item{ID: corpus.ItemID("codex", "session-123", 1), Line: 1, Time: time.Now(), Role: corpus.RoleUser, Text: "Continue the Eldspire rules."}
+	chunk := corpus.Chunk{Source: "codex", Session: "session-123", Cwd: "/work/Eldspire", Index: 1, Start: item.Time, End: item.Time, Items: []corpus.Item{item}}
+	if _, err := chunk.Write(corpusRoot); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	extract := func(_ context.Context, _ string, _ string, _ string, _ string, out any) (llm.Result, error) {
+		calls++
+		payload := map[string]any{"title": "Eldspire rules", "purpose": map[string]any{}, "observations": []any{}, "outputs": []any{}, "open_threads": []any{}, "references": []any{}}
+		if calls == 2 {
+			payload["purpose"] = map[string]any{"text": "Continue the Eldspire rules.", "evidence": []string{item.ID}}
+		}
+		b, _ := json.Marshal(payload)
+		_ = json.Unmarshal(b, out)
+		return llm.Result{}, nil
+	}
+	episodes, err := Project(context.Background(), Options{CorpusRoot: corpusRoot, OutRoot: outRoot, Source: "codex", Session: "session-123", extract: extract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || episodes[0].Purpose.Text == "" {
+		t.Fatalf("calls = %d, episode = %#v", calls, episodes[0])
+	}
+}
+
+func TestProjectLeavesSourcePointerWhenObserverStaysEmpty(t *testing.T) {
+	corpusRoot, outRoot := t.TempDir(), t.TempDir()
+	item := corpus.Item{ID: corpus.ItemID("codex", "session-123", 1), Line: 1, Time: time.Now(), Role: corpus.RoleUser, Text: "Continue the Eldspire rules."}
+	chunk := corpus.Chunk{Source: "codex", Session: "session-123", Cwd: "/work/Eldspire", Index: 1, Start: item.Time, End: item.Time, Items: []corpus.Item{item}}
+	if _, err := chunk.Write(corpusRoot); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	extract := func(_ context.Context, _ string, _ string, _ string, _ string, out any) (llm.Result, error) {
+		calls++
+		b, _ := json.Marshal(map[string]any{"title": "Eldspire rules", "purpose": map[string]any{}, "observations": []any{}, "outputs": []any{}, "open_threads": []any{}, "references": []any{}})
+		_ = json.Unmarshal(b, out)
+		return llm.Result{}, nil
+	}
+	episodes, err := Project(context.Background(), Options{CorpusRoot: corpusRoot, OutRoot: outRoot, Source: "codex", Session: "session-123", extract: extract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(episodes[0].References) != 1 || episodes[0].References[0].Ref != "transcript:codex/session-123/0001" {
+		t.Fatalf("calls = %d, episode = %#v", calls, episodes[0])
+	}
+	if _, err := Project(context.Background(), Options{CorpusRoot: corpusRoot, OutRoot: outRoot, Source: "codex", Session: "session-123", extract: extract}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("fallback should be cached, calls = %d", calls)
 	}
 }

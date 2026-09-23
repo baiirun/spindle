@@ -31,6 +31,10 @@ Tool calls, tool results, and assistant reports can be evidence of work even if 
 
 References are typed pointers a later agent can expand. Use "artifact" for a file, URL, commit, or command output worth revisiting, and "source" for a particularly useful transcript span. Return a short empty list when nothing is supported.`
 
+const observerRetrySystem = observerSystem + `
+
+The prior pass over this range did not produce any usable source-linked content. This is a repair pass. The range contains transcript items: return a non-empty purpose and at least one supported observation, output, open thread, or reference whenever an item describes work, a request, a result, or a constraint. Copy item IDs exactly from the supplied brackets.`
+
 func observerSchema() string {
 	claim := map[string]any{
 		"type": "object", "properties": map[string]any{
@@ -80,22 +84,23 @@ type Reference struct {
 
 // Episode is a durable projection of one bounded transcript chunk.
 type Episode struct {
-	ID             string      `json:"id"`
-	Source         string      `json:"source"`
-	Session        string      `json:"session"`
-	Chunk          int         `json:"chunk"`
-	Start          time.Time   `json:"start"`
-	End            time.Time   `json:"end"`
-	Scope          string      `json:"scope"`
-	SourceHash     string      `json:"source_hash"`
-	ProjectionHash string      `json:"projection_hash"`
-	Title          string      `json:"title"`
-	Purpose        Claim       `json:"purpose"`
-	Observations   []Claim     `json:"observations"`
-	Outputs        []Claim     `json:"outputs"`
-	OpenThreads    []Claim     `json:"open_threads"`
-	References     []Reference `json:"references"`
-	Continues      []Link      `json:"continues"`
+	ID               string      `json:"id"`
+	Source           string      `json:"source"`
+	Session          string      `json:"session"`
+	Chunk            int         `json:"chunk"`
+	Start            time.Time   `json:"start"`
+	End              time.Time   `json:"end"`
+	Scope            string      `json:"scope"`
+	SourceHash       string      `json:"source_hash"`
+	ProjectionHash   string      `json:"projection_hash"`
+	Title            string      `json:"title"`
+	Purpose          Claim       `json:"purpose"`
+	Observations     []Claim     `json:"observations"`
+	Outputs          []Claim     `json:"outputs"`
+	OpenThreads      []Claim     `json:"open_threads"`
+	References       []Reference `json:"references"`
+	Continues        []Link      `json:"continues"`
+	persistedContent bool
 }
 
 // Options configures one background projection pass.
@@ -156,7 +161,7 @@ func projectChunk(ctx context.Context, o Options, c corpus.Chunk, links []Link, 
 	linkBytes, _ := json.Marshal(links)
 	projectionHash := digest(append(append(raw, []byte(PromptVersion)...), linkBytes...))
 	path := Path(o.OutRoot, c.Source, c.Session, c.Index)
-	if old, err := ReadPath(path); err == nil && old.ProjectionHash == projectionHash {
+	if old, err := ReadPath(path); err == nil && old.ProjectionHash == projectionHash && hasContent(old) {
 		return old, nil
 	}
 
@@ -166,17 +171,43 @@ func projectChunk(ctx context.Context, o Options, c corpus.Chunk, links []Link, 
 		known[it.ID] = true
 		fmt.Fprintf(&input, "[%s %s %s] %s\n", it.ID, it.Time.UTC().Format(time.RFC3339), it.Role, it.Text)
 	}
-	var out struct {
-		Title        string      `json:"title"`
-		Purpose      Claim       `json:"purpose"`
-		Observations []Claim     `json:"observations"`
-		Outputs      []Claim     `json:"outputs"`
-		OpenThreads  []Claim     `json:"open_threads"`
-		References   []Reference `json:"references"`
-	}
-	if _, err := extract(ctx, o.Model, observerSystem, input.String(), observerSchema(), &out); err != nil {
+	out, err := observe(ctx, o.Model, observerSystem, input.String(), extract)
+	if err != nil {
 		return Episode{}, err
 	}
+	e := observedEpisode(c, sourceHash, projectionHash, links, out, known)
+	if !hasContent(e) {
+		if retry, err := observe(ctx, o.Model, observerRetrySystem, input.String(), extract); err == nil {
+			e = observedEpisode(c, sourceHash, projectionHash, links, retry, known)
+		}
+	}
+	if !hasContent(e) {
+		e.References = []Reference{fallbackReference(c)}
+	}
+	if err := Write(o.OutRoot, e); err != nil {
+		return Episode{}, err
+	}
+	return e, nil
+}
+
+type observation struct {
+	Title        string      `json:"title"`
+	Purpose      Claim       `json:"purpose"`
+	Observations []Claim     `json:"observations"`
+	Outputs      []Claim     `json:"outputs"`
+	OpenThreads  []Claim     `json:"open_threads"`
+	References   []Reference `json:"references"`
+}
+
+func observe(ctx context.Context, model, system, input string, extract extractorFunc) (observation, error) {
+	var out observation
+	if _, err := extract(ctx, model, system, input, observerSchema(), &out); err != nil {
+		return observation{}, err
+	}
+	return out, nil
+}
+
+func observedEpisode(c corpus.Chunk, sourceHash, projectionHash string, links []Link, out observation, known map[string]bool) Episode {
 	e := Episode{
 		ID: episodeID(c), Source: c.Source, Session: c.Session, Chunk: c.Index,
 		Start: c.Start, End: c.End, Scope: scope(c.Cwd), SourceHash: sourceHash, ProjectionHash: projectionHash, Continues: links,
@@ -187,10 +218,18 @@ func projectChunk(ctx context.Context, o Options, c corpus.Chunk, links []Link, 
 	if e.Title == "" {
 		e.Title = fmt.Sprintf("%s session %s", e.Scope, e.Session[:min(8, len(e.Session))])
 	}
-	if err := Write(o.OutRoot, e); err != nil {
-		return Episode{}, err
+	return e
+}
+
+func hasContent(e Episode) bool {
+	return e.persistedContent || e.Purpose.Text != "" || len(e.Observations) > 0 || len(e.Outputs) > 0 || len(e.OpenThreads) > 0 || len(e.References) > 0
+}
+
+func fallbackReference(c corpus.Chunk) Reference {
+	return Reference{
+		Kind: "source", Ref: fmt.Sprintf("transcript:%s/%s/%04d", c.Source, c.Session, c.Index),
+		Why: "Observer produced no evidence-linked summary; expand this bounded source range.", Evidence: []string{c.Items[0].ID},
 	}
-	return e, nil
 }
 
 func digest(data []byte) string {
@@ -364,6 +403,11 @@ func ReadPath(path string) (Episode, error) {
 			break
 		}
 	}
+	e.persistedContent = strings.Contains(parts[2], "\n## Purpose\n") ||
+		strings.Contains(parts[2], "\n## Observed\n") ||
+		strings.Contains(parts[2], "\n## Outputs\n") ||
+		strings.Contains(parts[2], "\n## Open threads\n") ||
+		strings.Contains(parts[2], "\n- source `")
 	return e, nil
 }
 
