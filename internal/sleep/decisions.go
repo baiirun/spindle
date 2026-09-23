@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +50,8 @@ Return an empty list if the chunk contains no decisions.`
 
 const extractSchema = `{"type":"object","properties":{"decisions":{"type":"array","items":{"type":"object","properties":{"note":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}}},"required":["note","evidence"]}}},"required":["decisions"]}`
 
+type extractorFunc func(context.Context, string, string, string, string, any) (llm.Result, error)
+
 // Decision is one extracted note before it's written to disk.
 type Decision struct {
 	Note     string   `json:"note"`
@@ -74,6 +77,7 @@ type Options struct {
 	Slice      string
 	Workers    int
 	Model      string
+	extract    extractorFunc // test seam; production uses llm.JSON
 }
 
 // Run extracts decisions from every chunk in the slice, reusing cached results.
@@ -83,13 +87,23 @@ func Run(ctx context.Context, o Options) (extracted, cached int, cost float64, e
 		return 0, 0, 0, err
 	}
 	sort.Strings(paths)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	extract := o.extract
+	if extract == nil {
+		extract = llm.JSON
+	}
 	var (
-		mu   sync.Mutex
-		errs []error
-		wg   sync.WaitGroup
-		sem  = make(chan struct{}, o.Workers)
+		mu       sync.Mutex
+		errs     []error
+		limitErr error
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, o.Workers)
 	)
 	for i, p := range paths {
+		if ctx.Err() != nil {
+			break
+		}
 		h, err := corpus.ReadChunkHeader(p)
 		if err != nil {
 			return 0, 0, 0, err
@@ -103,13 +117,25 @@ func Run(ctx context.Context, o Options) (extracted, cached int, cost float64, e
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(p, prev string) {
+		if ctx.Err() != nil {
+			<-sem
+			wg.Done()
+			break
+		}
+		go func(p, prev string, extract extractorFunc) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			hit, c, err := extractChunk(ctx, o, p, prev)
+			hit, c, err := extractChunk(ctx, o, extract, p, prev)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
+				if errors.Is(err, llm.ErrUsageLimit) {
+					if limitErr == nil {
+						limitErr = fmt.Errorf("%s: %w", p, err)
+					}
+					cancel()
+					return
+				}
 				errs = append(errs, fmt.Errorf("%s: %w", p, err))
 				return
 			}
@@ -119,9 +145,12 @@ func Run(ctx context.Context, o Options) (extracted, cached int, cost float64, e
 				extracted++
 				cost += c
 			}
-		}(p, prev)
+		}(p, prev, extract)
 	}
 	wg.Wait()
+	if limitErr != nil {
+		return extracted, cached, cost, limitErr
+	}
 	if len(errs) > 0 {
 		return extracted, cached, cost, fmt.Errorf("%d chunks failed; first: %w", len(errs), errs[0])
 	}
@@ -134,7 +163,7 @@ func cachePath(outRoot, chunkPath string) string {
 	return filepath.Join(outRoot, "cache", parts[n-3], parts[n-2], strings.TrimSuffix(parts[n-1], ".md")+".json")
 }
 
-func extractChunk(ctx context.Context, o Options, path, prevPath string) (bool, float64, error) {
+func extractChunk(ctx context.Context, o Options, extract extractorFunc, path, prevPath string) (bool, float64, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false, 0, err
@@ -174,7 +203,7 @@ func extractChunk(ctx context.Context, o Options, path, prevPath string) (bool, 
 	var out struct {
 		Decisions []Decision `json:"decisions"`
 	}
-	res, err := llm.JSON(ctx, o.Model, extractSystem, b.String(), extractSchema, &out)
+	res, err := extract(ctx, o.Model, extractSystem, b.String(), extractSchema, &out)
 	if err != nil {
 		return false, res.CostUSD, err
 	}
