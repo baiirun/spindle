@@ -11,26 +11,49 @@ import (
 	"strings"
 	"time"
 
+	"spindle/internal/episode"
 	"spindle/internal/eval"
 	"spindle/internal/llm"
 	"spindle/internal/sleep"
 )
 
-const defaultNotes = "data/memory/" + sleep.PromptVersion
+const defaultNotes = "data/memory/" + sleep.PromptVersion // legacy decision-eval fixture
+const defaultEpisodes = "data/episodes/" + episode.PromptVersion
+
+type linksFlag []episode.Link
+
+func (f *linksFlag) String() string { return fmt.Sprint([]episode.Link(*f)) }
+
+func (f *linksFlag) Set(value string) error {
+	ref, why, ok := strings.Cut(value, "=")
+	if !ok || strings.TrimSpace(ref) == "" || strings.TrimSpace(why) == "" {
+		return fmt.Errorf("continue must be REF=WHY")
+	}
+	*f = append(*f, episode.Link{Ref: strings.TrimSpace(ref), Why: strings.TrimSpace(why)})
+	return nil
+}
 
 func runSleep(args []string) error {
 	fs := flag.NewFlagSet("sleep", flag.ExitOnError)
 	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
-	out := fs.String("out", defaultNotes, "notes root for this extractor version")
-	slice := fs.String("slice", "Zaum", "only sessions whose cwd contains this")
-	workers := fs.Int("workers", 4, "parallel calls")
+	out := fs.String("out", defaultEpisodes, "episode root")
+	source := fs.String("source", "", "source name, e.g. codex")
+	session := fs.String("session", "", "source session ID")
+	var continues linksFlag
+	fs.Var(&continues, "continue", "prior context link as REF=WHY (repeatable)")
 	fs.Parse(args)
-
-	extracted, cached, cost, err := sleep.Run(context.Background(), sleep.Options{
-		CorpusRoot: *corpusRoot, OutRoot: *out, Slice: *slice, Workers: *workers, Model: llm.Extractor,
+	if *source == "" || *session == "" {
+		return fmt.Errorf("sleep requires --source and --session; an external scheduler chooses when to project")
+	}
+	episodes, err := episode.Project(context.Background(), episode.Options{
+		CorpusRoot: *corpusRoot, OutRoot: *out, Source: *source, Session: *session,
+		Model: llm.Extractor, Continues: continues,
 	})
-	fmt.Printf("sleep %s: %d chunks extracted, %d cached (cost $%.2f) → %s\n", sleep.PromptVersion, extracted, cached, cost, *out)
-	return err
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sleep %s: wrote %d episode(s) → %s\n", episode.PromptVersion, len(episodes), *out)
+	return nil
 }
 
 func evalRun(args []string) error {

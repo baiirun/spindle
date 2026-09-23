@@ -15,7 +15,11 @@ const usage = `usage: spindle <command> [flags]
 
 commands:
   ingest   normalize Codex and Claude transcripts into Markdown chunks
-  sleep    extract decision notes from corpus chunks
+  sleep    project one source session into durable handoff episodes
+  wake     return a bounded, read-only continuity context
+  search   find episodes and transcript passages
+  read     expand an episode or transcript reference
+  related  follow explicit episode continuation links
   eval     mine | label | run | report
 `
 
@@ -30,6 +34,14 @@ func main() {
 		err = runIngest(os.Args[2:])
 	case "sleep":
 		err = runSleep(os.Args[2:])
+	case "wake":
+		err = runWake(os.Args[2:])
+	case "search":
+		err = runSearch(os.Args[2:])
+	case "read":
+		err = runRead(os.Args[2:])
+	case "related":
+		err = runRelated(os.Args[2:])
 	case "eval":
 		err = runEval(os.Args[2:])
 	default:

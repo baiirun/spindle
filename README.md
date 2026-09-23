@@ -1,9 +1,12 @@
 # spindle
 
-Memory for agent sessions. spindle turns raw agent transcripts (Codex, Claude Code) into durable, searchable memory.
+Durable, searchable context for agent work. spindle projects raw agent
+transcripts into evidence-linked episodes that a fresh agent can search and
+expand when it needs to continue work.
 
-- `sleep`: turns transcripts into durable episodes and records
-- `dream`: consolidates across episodes into current knowledge
-- `wake`: recall with citations back to transcript items
+- `sleep`: background projection of a completed or idle session
+- `wake`, `search`, `read`, `related`: read-only continuity tools for agents
+- `dream`: future consolidation across episodes, only when needed
 
-Status: pre-alpha. The first goal is one design that runs end to end and can be evaluated against real recall questions.
+Status: pre-alpha. The first goal is a real end-to-end continuation loop; see
+[the episode contract](docs/episodes.md).

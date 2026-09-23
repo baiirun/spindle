@@ -1,4 +1,10 @@
-# Evaluation
+# Evaluation (legacy decision-recall experiment)
+
+This document describes the earlier decision-note experiment. It is retained as
+evidence and a source of historical recall candidates, but is not the target
+evaluation for the episode-continuity product. The next evaluator should run
+fresh agents at historical session boundaries, give them only `wake/search/read`,
+and score their retrieval trace and ability to continue useful work.
 
 ## What we measure
 
