@@ -35,10 +35,10 @@ For each item and arm, spindle builds a directory of the memory available at the
 
 | Role | Model | Notes |
 |---|---|---|
-| Extractor (`sleep`) | claude-sonnet-5 | No tools; outputs JSON |
-| Reader (agent) | claude-sonnet-5 | Read-only tools, maximum 12 turns |
-| Judge | claude-opus-5-5 | No tools; outputs JSON; frozen prompt |
-| Labeler | claude-opus-5-5 | Drafts gold answers |
+| Extractor (`sleep`) | gpt-6-luna, low reasoning | No tools; outputs JSON |
+| Reader (agent) | gpt-6-luna, low reasoning | Current directory is materialized memory; host-read isolation and a turn cap are deferred in this Codex CLI experiment |
+| Judge | gpt-6-luna, low reasoning | No tools; outputs JSON; frozen prompt |
+| Labeler | gpt-6-luna, low reasoning | Drafts gold answers |
 
 ## Scores
 
@@ -52,7 +52,7 @@ Each is reported overall and sliced by `kind`, by `same_session`, and by arm.
 | **abstained** | The answer says it doesn't know |
 | **citations valid** | Share of cited item IDs that exist in the memory available to that run (deterministic) |
 | **reached** | The agent searched memory at all (from the trace) |
-| **cost** | USD, turns, and duration per item |
+| **usage** | Codex input, output, and reasoning tokens, plus turns and duration per item; local runs do not estimate USD cost |
 
 A change is kept when it improves `correct` without making `contradiction` worse, and the improvement is larger than the run-to-run noise measured by repeating an arm.
 

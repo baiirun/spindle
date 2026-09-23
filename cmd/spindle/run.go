@@ -111,7 +111,7 @@ func evalReport(args []string) error {
 }
 
 func printSummaries(rows []namedSummary) {
-	cols := []string{"n", "correct", "contradiction", "abstained", "attribution", "citations_valid", "reached", "turns", "reader_cost_usd"}
+	cols := []string{"n", "correct", "contradiction", "abstained", "attribution", "citations_valid", "reached", "turns", "input_tokens", "output_tokens", "reasoning_tokens"}
 	fmt.Printf("%-36s %s\n", "run", strings.Join(cols, "  "))
 	for _, r := range rows {
 		var vals []string

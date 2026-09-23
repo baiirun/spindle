@@ -21,7 +21,7 @@ import (
 
 // PromptVersion changes whenever the extractor prompt or note format changes,
 // which invalidates the per-chunk cache.
-const PromptVersion = "decisions-v1"
+const PromptVersion = "decisions-v2"
 
 const contextItems = 8 // trailing items of the previous chunk, so decisions spanning a boundary keep their proposal
 

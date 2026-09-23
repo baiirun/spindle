@@ -35,7 +35,7 @@ func evalMine(args []string) error {
 	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
 	slice := fs.String("slice", "Zaum", "only sessions whose cwd contains this")
 	out := fs.String("out", "data/eval/candidates.jsonl", "classified candidates")
-	model := fs.String("model", "claude-haiku-4-5", "classifier model")
+	model := fs.String("model", llm.Classifier, "classifier model")
 	workers := fs.Int("workers", 6, "parallel calls")
 	fs.Parse(args)
 

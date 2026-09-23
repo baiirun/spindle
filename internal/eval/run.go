@@ -17,13 +17,6 @@ import (
 	"spindle/internal/sleep"
 )
 
-const readerTools = "Read,Grep,Glob"
-
-// readerDeny keeps the reader inside its materialized memory directory. Eval
-// dirs live under /private/tmp, so denying /Users blocks the live corpus,
-// Codex and Claude homes, and the repo.
-var readerDeny = []string{"Read(//Users/**)", "Grep(//Users/**)", "Glob(//Users/**)", "Read(//private/tmp/spx/**)", "Grep(//private/tmp/spx/**)", "Glob(//private/tmp/spx/**)"}
-
 func readerSystem(a Arm) string {
 	if !a.Transcripts && a.Notes == "" {
 		return `You answer questions about the user's past work with AI agents. You have no memory of past
@@ -74,20 +67,26 @@ type Judgment struct {
 
 // Result is one item's outcome in a run.
 type Result struct {
-	ItemID         string         `json:"item"`
-	Kind           string         `json:"kind"`
-	Arm            string         `json:"arm"`
-	Answer         string         `json:"answer"`
-	Citations      []string       `json:"citations"`
-	CitationsValid int            `json:"citations_valid"`
-	ToolCalls      []llm.ToolCall `json:"tool_calls"`
-	Judgment       Judgment       `json:"judgment"`
-	Correct        float64        `json:"correct"` // share of gold statements supported
-	ReaderCost     float64        `json:"reader_cost_usd"`
-	JudgeCost      float64        `json:"judge_cost_usd"`
-	Turns          int            `json:"turns"`
-	DurationMS     int64          `json:"duration_ms"`
-	Error          string         `json:"error,omitempty"`
+	ItemID                string         `json:"item"`
+	Kind                  string         `json:"kind"`
+	Arm                   string         `json:"arm"`
+	Answer                string         `json:"answer"`
+	Citations             []string       `json:"citations"`
+	CitationsValid        int            `json:"citations_valid"`
+	ToolCalls             []llm.ToolCall `json:"tool_calls"`
+	Judgment              Judgment       `json:"judgment"`
+	Correct               float64        `json:"correct"` // share of gold statements supported
+	ReaderCost            float64        `json:"reader_cost_usd"`
+	JudgeCost             float64        `json:"judge_cost_usd"`
+	ReaderInputTokens     int64          `json:"reader_input_tokens"`
+	ReaderOutputTokens    int64          `json:"reader_output_tokens"`
+	ReaderReasoningTokens int64          `json:"reader_reasoning_tokens"`
+	JudgeInputTokens      int64          `json:"judge_input_tokens"`
+	JudgeOutputTokens     int64          `json:"judge_output_tokens"`
+	JudgeReasoningTokens  int64          `json:"judge_reasoning_tokens"`
+	Turns                 int            `json:"turns"`
+	DurationMS            int64          `json:"duration_ms"`
+	Error                 string         `json:"error,omitempty"`
 }
 
 // RunOptions configures an eval run.
@@ -176,11 +175,9 @@ func runItem(ctx context.Context, o RunOptions, idx *chunkIndex, notes []sleep.N
 		MaxTurns: o.MaxTurns,
 		Timeout:  8 * time.Minute,
 	}
-	if o.Arm.Transcripts || o.Arm.Notes != "" {
-		req.Tools, req.Deny = strings.Split(readerTools, ","), readerDeny
-	}
 	res, err := llm.Run(ctx, req)
 	r.Answer, r.ToolCalls, r.ReaderCost, r.Turns, r.DurationMS = res.Text, res.ToolCalls, res.CostUSD, res.Turns, res.DurationMS
+	r.ReaderInputTokens, r.ReaderOutputTokens, r.ReaderReasoningTokens = res.InputTokens, res.OutputTokens, res.ReasoningTokens
 	if err != nil {
 		return r, err
 	}
@@ -199,6 +196,7 @@ func runItem(ctx context.Context, o RunOptions, idx *chunkIndex, notes []sleep.N
 		it.Question, gold.String(), it.Attribution, it.Kind, res.Text)
 	jres, err := llm.JSON(ctx, llm.Judge, judgeSystem, prompt, judgeSchema, &r.Judgment)
 	r.JudgeCost = jres.CostUSD
+	r.JudgeInputTokens, r.JudgeOutputTokens, r.JudgeReasoningTokens = jres.InputTokens, jres.OutputTokens, jres.ReasoningTokens
 	if err != nil {
 		return r, err
 	}
@@ -255,7 +253,7 @@ func Summarize(arm string, rs []Result) Summary {
 }
 
 func metrics(rs []Result) map[string]float64 {
-	var n, correct, contra, abst, reached, citeValid, cites, turns, cost, attrN, attrOK float64
+	var n, correct, contra, abst, reached, citeValid, cites, turns, inputTokens, outputTokens, reasoningTokens, attrN, attrOK float64
 	for _, r := range rs {
 		if r.Error != "" {
 			continue
@@ -274,7 +272,9 @@ func metrics(rs []Result) map[string]float64 {
 		cites += float64(len(r.Citations))
 		citeValid += float64(r.CitationsValid)
 		turns += float64(r.Turns)
-		cost += r.ReaderCost
+		inputTokens += float64(r.ReaderInputTokens + r.JudgeInputTokens)
+		outputTokens += float64(r.ReaderOutputTokens + r.JudgeOutputTokens)
+		reasoningTokens += float64(r.ReaderReasoningTokens + r.JudgeReasoningTokens)
 		if a := r.Judgment.Attribution; a != "na" && a != "" {
 			attrN++
 			if a == "correct" {
@@ -287,7 +287,8 @@ func metrics(rs []Result) map[string]float64 {
 	}
 	m := map[string]float64{
 		"n": n, "correct": correct / n, "contradiction": contra / n, "abstained": abst / n,
-		"reached": reached / n, "turns": turns / n, "reader_cost_usd": cost / n,
+		"reached": reached / n, "turns": turns / n,
+		"input_tokens": inputTokens / n, "output_tokens": outputTokens / n, "reasoning_tokens": reasoningTokens / n,
 	}
 	if cites > 0 {
 		m["citations_valid"] = citeValid / cites
