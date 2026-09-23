@@ -1,0 +1,4 @@
+# Corpus snapshots and eval runs contain private transcripts; never commit them.
+/data/
+/runs/
+.env
