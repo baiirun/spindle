@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"spindle/internal/eval"
@@ -19,6 +21,8 @@ func runEval(args []string) error {
 		return errors.New("eval: want mine | label | run | report | continue")
 	}
 	switch args[0] {
+	case "trials":
+		return evalTrials(args[1:])
 	case "trials-mine":
 		return evalTrialsMine(args[1:])
 	case "trials-label":
@@ -164,4 +168,63 @@ func evalTrialsLabel(args []string) error {
 	}
 	fmt.Printf("labeled %d of %d candidates: %v → %s\n", len(trials), len(cands), byConf, *out)
 	return eval.WriteTrials(*out, trials)
+}
+
+func evalTrials(args []string) error {
+	fs := flag.NewFlagSet("eval trials", flag.ExitOnError)
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	episodes := fs.String("episodes", roots.Episodes, "episode root")
+	in := fs.String("in", "data/eval/continuation-v0.jsonl", "trial set")
+	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes")
+	only := fs.String("only", "", "comma-separated trial IDs (default: all)")
+	workers := fs.Int("workers", 3, "parallel trials")
+	tag := fs.String("tag", "", "label for this run")
+	fs.Parse(args)
+	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes {
+		return fmt.Errorf("unknown arm %q", *arm)
+	}
+	trials, err := eval.ReadTrials(*in)
+	if err != nil {
+		return err
+	}
+	if *only != "" {
+		want := map[string]bool{}
+		for _, id := range strings.Split(*only, ",") {
+			want[strings.TrimSpace(id)] = true
+		}
+		var kept []eval.Trial
+		for _, t := range trials {
+			if want[t.ID] {
+				kept = append(kept, t)
+			}
+		}
+		trials = kept
+	}
+	name := time.Now().Format("20060102-150405") + "-trials-" + *arm
+	if *tag != "" {
+		name += "-" + *tag
+	}
+	runDir, err := filepath.Abs(filepath.Join("runs", name))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return err
+	}
+	repo, _ := os.Getwd()
+	bin, err := eval.BuildCLI(context.Background(), repo, runDir)
+	if err != nil {
+		return err
+	}
+	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
+		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers,
+	})
+	s := eval.SummarizeTrials(*arm, results)
+	b, _ := json.MarshalIndent(s, "", "  ")
+	if err := os.WriteFile(filepath.Join(runDir, "summary.json"), b, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", name, b)
+	return runErr
 }
