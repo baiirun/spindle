@@ -21,7 +21,7 @@ commands:
   search   find episodes and transcript passages
   read     expand an episode or transcript reference
   related  follow explicit episode continuation links
-  eval     mine | label | run | report
+  eval     mine | label | run | report | continue
 `
 
 func main() {

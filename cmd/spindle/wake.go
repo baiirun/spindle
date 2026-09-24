@@ -105,7 +105,7 @@ func runRead(args []string) error {
 	episodes := fs.String("episodes", defaultEpisodes, "episode root")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
-		return fmt.Errorf("read requires one episode: or transcript: reference")
+		return fmt.Errorf("read requires one episode, transcript, or source item reference")
 	}
 	text, err := wake.Read(wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes}, fs.Arg(0))
 	if err != nil {

@@ -6,6 +6,18 @@ evaluation for the episode-continuity product. The next evaluator should run
 fresh agents at historical session boundaries, give them only `wake/search/read`,
 and score their retrieval trace and ability to continue useful work.
 
+## Continuation trial
+
+`spindle eval continue --source <source> --session <id> --task "..."` runs one
+fresh Luna agent from the Spindle checkout. Its startup instruction contains the
+known prior-session handle and requires `spindle resume` before it works. The
+run records the answer and tool trace in `runs/.../continuation.json` and fails
+if the agent does not successfully invoke `resume`.
+
+This is an end-to-end smoke trial, not an isolated benchmark: the current
+Codex CLI sandbox can read the checkout, and there is no MCP adapter or
+automated scheduler handoff yet.
+
 ## What we measure
 
 Two layers:

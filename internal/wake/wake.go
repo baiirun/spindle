@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
+	"spindle/internal/corpus"
 	"spindle/internal/episode"
 )
 
@@ -185,6 +187,9 @@ func Resume(o Options, source, session string) (ResumeResult, error) {
 // Read expands a source selected by Search. It rejects path traversal and
 // only permits references within the configured source roots.
 func Read(o Options, ref string) (string, error) {
+	if source, sessionPrefix, line, ok := parseEvidenceRef(ref); ok {
+		return readEvidence(o.CorpusRoot, source, sessionPrefix, line, ref)
+	}
 	kind, source, session, chunk, err := parseRef(ref)
 	if err != nil {
 		return "", err
@@ -215,6 +220,43 @@ func Read(o Options, ref string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// readEvidence expands one stable transcript item citation. Episode citations
+// use an eight-character session prefix, so resolve it against corpus sessions
+// and reject an ambiguous prefix rather than guessing.
+func readEvidence(root, source, sessionPrefix string, line int, ref string) (string, error) {
+	if root == "" {
+		return "", fmt.Errorf("transcript retrieval is not configured")
+	}
+	if !safePart(source) || !safePart(sessionPrefix) {
+		return "", fmt.Errorf("invalid ref %q", ref)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, source))
+	if err != nil {
+		return "", err
+	}
+	var sessions []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), sessionPrefix) {
+			sessions = append(sessions, entry.Name())
+		}
+	}
+	if len(sessions) != 1 {
+		return "", fmt.Errorf("evidence ref %q matches %d sessions", ref, len(sessions))
+	}
+	chunks, err := corpus.ReadSession(root, source, sessions[0])
+	if err != nil {
+		return "", err
+	}
+	for _, chunk := range chunks {
+		for _, item := range chunk.Items {
+			if item.ID == ref && item.Line == line {
+				return item.Render(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("evidence ref %q was not found", ref)
 }
 
 // Related follows explicit continuation links from an episode. It does not
@@ -309,6 +351,19 @@ func parseRef(ref string) (kind, source, session string, chunk int, err error) {
 		err = fmt.Errorf("invalid ref %q", ref)
 	}
 	return
+}
+
+func parseEvidenceRef(ref string) (source, sessionPrefix string, line int, ok bool) {
+	source, tail, found := strings.Cut(ref, ":")
+	if !found {
+		return "", "", 0, false
+	}
+	sessionPrefix, lineText, found := strings.Cut(tail, "#L")
+	if !found || source == "" || sessionPrefix == "" {
+		return "", "", 0, false
+	}
+	line, err := strconv.Atoi(lineText)
+	return source, sessionPrefix, line, err == nil && line > 0
 }
 
 func safePart(value string) bool {

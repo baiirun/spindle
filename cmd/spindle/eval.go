@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"spindle/internal/eval"
 	"spindle/internal/llm"
@@ -15,7 +16,7 @@ import (
 
 func runEval(args []string) error {
 	if len(args) < 1 {
-		return errors.New("eval: want mine | label | run | report")
+		return errors.New("eval: want mine | label | run | report | continue")
 	}
 	switch args[0] {
 	case "mine":
@@ -26,8 +27,40 @@ func runEval(args []string) error {
 		return evalRun(args[1:])
 	case "report":
 		return evalReport(args[1:])
+	case "continue":
+		return evalContinue(args[1:])
 	}
 	return fmt.Errorf("eval: unknown subcommand %q", args[0])
+}
+
+func evalContinue(args []string) error {
+	fs := flag.NewFlagSet("eval continue", flag.ExitOnError)
+	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
+	episodeRoot := fs.String("episodes", defaultEpisodes, "episode root")
+	source := fs.String("source", "", "source name, e.g. codex")
+	session := fs.String("session", "", "source session ID")
+	task := fs.String("task", "", "continuation task for the fresh agent")
+	runDir := fs.String("out", "", "run output directory")
+	fs.Parse(args)
+	if *source == "" || *session == "" || *task == "" {
+		return fmt.Errorf("eval continue requires --source, --session, and --task")
+	}
+	if *runDir == "" {
+		*runDir = filepath.Join("runs", time.Now().Format("20060102-150405")+"-continuation")
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	result, err := eval.RunContinuation(context.Background(), eval.ContinuationOptions{
+		CorpusRoot: *corpusRoot, EpisodeRoot: *episodeRoot, Source: *source, Session: *session,
+		Task: *task, WorkDir: workDir, RunDir: *runDir,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("continuation used resume: %t → %s\n", result.UsedResume, filepath.Join(*runDir, "continuation.json"))
+	return nil
 }
 
 func evalMine(args []string) error {

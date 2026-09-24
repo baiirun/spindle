@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"spindle/internal/corpus"
 	"spindle/internal/episode"
 )
 
@@ -40,6 +41,23 @@ func TestSearchStartsWithEpisodeAndReadFollowsSafeRef(t *testing.T) {
 	}
 	if _, err := Read(Options{EpisodeRoot: episodeRoot}, "episode:../../etc/0001"); err == nil {
 		t.Fatal("Read accepted path traversal")
+	}
+}
+
+func TestReadExpandsEvidenceCitation(t *testing.T) {
+	root := t.TempDir()
+	corpusRoot := filepath.Join(root, "corpus")
+	chunk := corpus.Chunk{Source: "codex", Session: "01a07de8-ae9d-7291-a230-df7f5da2d1cd", Index: 1, Items: []corpus.Item{{ID: "codex:01a07de8#L315", Line: 315, Role: corpus.RoleAssistant, Text: "Recovered design context."}}}
+	chunk.Start, chunk.End = chunk.Items[0].Time, chunk.Items[0].Time
+	if _, err := chunk.Write(corpusRoot); err != nil {
+		t.Fatal(err)
+	}
+	text, err := Read(Options{CorpusRoot: corpusRoot}, "codex:01a07de8#L315")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Recovered design context.") {
+		t.Fatalf("read = %q", text)
 	}
 }
 
