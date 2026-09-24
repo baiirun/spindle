@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"spindle/internal/corpus"
 	"spindle/internal/episode"
 	"spindle/internal/eval"
 	"spindle/internal/llm"
@@ -33,16 +34,49 @@ func (f *linksFlag) Set(value string) error {
 }
 
 func runSleep(args []string) error {
+	home, _ := os.UserHomeDir()
 	fs := flag.NewFlagSet("sleep", flag.ExitOnError)
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	out := fs.String("out", roots.Episodes, "episode root")
 	source := fs.String("source", "", "source name, e.g. codex")
 	session := fs.String("session", "", "source session ID")
+	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
+	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
+	noIngest := fs.Bool("no-ingest", false, "project the corpus as-is instead of refreshing the session's transcript first")
 	var continues linksFlag
 	fs.Var(&continues, "continue", "prior context link as REF=WHY (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin sleep [flags] <source>:<session>   (or --source/--session)\n\nRefreshes the session's transcript in the corpus, then projects it into episodes.")
+		fs.PrintDefaults()
+	}
 	fs.Parse(args)
-	if *source == "" || *session == "" {
-		return fmt.Errorf("sleep requires --source and --session; an external scheduler chooses when to project")
+	if fs.NArg() == 1 {
+		s, id, ok := strings.Cut(fs.Arg(0), ":")
+		if !ok || s == "" || id == "" {
+			return fmt.Errorf("session must be <source>:<session>, e.g. claude:226b239e-…")
+		}
+		*source, *session = s, id
+	}
+	if *source == "" || *session == "" || fs.NArg() > 1 {
+		return fmt.Errorf("sleep requires one session: <source>:<session> or --source and --session")
+	}
+	if !*noIngest {
+		path, err := corpus.FindTranscript(*source, *session, *codexHome, *claudeProjects)
+		if err != nil {
+			return err
+		}
+		read := corpus.ReadClaudeSession
+		if *source == "codex" {
+			read = corpus.ReadCodexSession
+		}
+		n, err := ingestTranscript(read, path, *corpusRoot)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%s:%s has no ingestible content (subagent or empty session)", *source, *session)
+		}
+		fmt.Printf("ingested %s:%s → %d chunk(s)\n", *source, *session, n)
 	}
 	episodes, err := episode.Project(context.Background(), episode.Options{
 		CorpusRoot: *corpusRoot, OutRoot: *out, Source: *source, Session: *session,

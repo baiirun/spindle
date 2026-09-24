@@ -4,6 +4,7 @@ package corpus
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -90,4 +91,31 @@ func isInjected(text string) bool {
 		}
 	}
 	return false
+}
+
+// FindTranscript locates the source transcript for a session ID, so callers
+// can refresh one session without scanning or re-ingesting everything.
+func FindTranscript(source, session, codexHome, claudeProjects string) (string, error) {
+	var patterns []string
+	switch source {
+	case "codex":
+		patterns = []string{
+			filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*"+session+".jsonl"),
+			filepath.Join(codexHome, "archived_sessions", "rollout-*"+session+".jsonl"),
+		}
+	case "claude":
+		patterns = []string{filepath.Join(claudeProjects, "*", session+".jsonl")}
+	default:
+		return "", fmt.Errorf("unknown source %q", source)
+	}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) > 0 {
+			return matches[0], nil
+		}
+	}
+	return "", fmt.Errorf("no %s transcript found for session %s", source, session)
 }

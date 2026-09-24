@@ -77,20 +77,15 @@ func runIngest(args []string) error {
 	var sessions, chunks, skipped int
 	ingest := func(read func(string) (corpus.Session, bool, error), paths []string) error {
 		for _, p := range paths {
-			s, ok, err := read(p)
+			n, err := ingestTranscript(read, p, *out)
 			if err != nil {
 				return err
 			}
-			if !ok || len(s.Items) == 0 {
+			if n == 0 {
 				skipped++
 				continue
 			}
-			for _, c := range corpus.SplitChunks(s) {
-				if _, err := c.Write(*out); err != nil {
-					return err
-				}
-				chunks++
-			}
+			chunks += n
 			sessions++
 		}
 		return nil
@@ -132,6 +127,26 @@ func runIngest(args []string) error {
 	}
 	fmt.Printf("ingested %d sessions into %d chunks under %s (%d skipped: subagent or empty)\n", sessions, chunks, *out, skipped)
 	return nil
+}
+
+// ingestTranscript normalizes one source transcript into corpus chunks and
+// returns how many chunks it wrote; 0 means the session was skipped
+// (a subagent or empty session).
+func ingestTranscript(read func(string) (corpus.Session, bool, error), path, out string) (int, error) {
+	s, ok, err := read(path)
+	if err != nil {
+		return 0, err
+	}
+	if !ok || len(s.Items) == 0 {
+		return 0, nil
+	}
+	chunks := corpus.SplitChunks(s)
+	for _, c := range chunks {
+		if _, err := c.Write(out); err != nil {
+			return 0, err
+		}
+	}
+	return len(chunks), nil
 }
 
 // within reports whether path is inside dir.

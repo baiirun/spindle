@@ -40,7 +40,7 @@ requirement for work to be recorded.
 
 - `ingest`: normalize durable transcript sources into Markdown chunks with
   stable item IDs.
-- `sleep`: project one selected session into bounded handoff episodes. The
+- `sleep`: refresh one session's transcript in the corpus, then project it into bounded handoff episodes (`spin sleep <source>:<session>`). The
   external caller decides when a session is idle or complete.
 - `resume`: warm-start a replacement agent from the latest usable episode of a
   known source session. It exposes trailing source-only ranges instead of
