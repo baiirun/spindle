@@ -68,6 +68,10 @@ func runIngest(args []string) error {
 	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
 	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
 	out := fs.String("out", roots.Corpus, "corpus output root")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin ingest [flags] [transcript.jsonl ...]\n\nWith no files, ingests every Codex and Claude session. With files, ingests only those.")
+		fs.PrintDefaults()
+	}
 	fs.Parse(args)
 
 	var sessions, chunks, skipped int
@@ -92,6 +96,26 @@ func runIngest(args []string) error {
 		return nil
 	}
 
+	if fs.NArg() > 0 {
+		for _, p := range fs.Args() {
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				return err
+			}
+			read := corpus.ReadClaudeSession
+			if within(abs, *codexHome) {
+				read = corpus.ReadCodexSession
+			} else if !within(abs, *claudeProjects) {
+				return fmt.Errorf("%s is not under --codex-home or --claude-projects", p)
+			}
+			if err := ingest(read, []string{abs}); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("ingested %d sessions into %d chunks under %s (%d skipped: subagent or empty)\n", sessions, chunks, *out, skipped)
+		return nil
+	}
+
 	codexPaths, err := corpus.CodexSessionPaths(*codexHome)
 	if err != nil {
 		return err
@@ -108,6 +132,12 @@ func runIngest(args []string) error {
 	}
 	fmt.Printf("ingested %d sessions into %d chunks under %s (%d skipped: subagent or empty)\n", sessions, chunks, *out, skipped)
 	return nil
+}
+
+// within reports whether path is inside dir.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 // cwdMatches reports whether a session belongs to a project slice.
