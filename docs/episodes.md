@@ -36,7 +36,7 @@ or a live agent inbox.
 ## Persisted format
 
 Episodes are plain Markdown under
-`data/episodes/episodes-v2/<source>/<session>/<chunk>.md`. Frontmatter holds
+`$SPINDLE_HOME/episodes/episodes-v2/<source>/<session>/<chunk>.md`. Frontmatter holds
 the stable identity, source range, scope, status, source hash, projection hash, and continuation links.
 The body holds purpose, observations, outputs, open threads, and references,
 with inline transcript citations.
