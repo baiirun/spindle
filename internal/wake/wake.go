@@ -37,6 +37,8 @@ type ResumeResult struct {
 type Options struct {
 	CorpusRoot  string
 	EpisodeRoot string
+	Source      string
+	Session     string
 	Scope       string
 	Query       string
 	Limit       int
@@ -49,13 +51,19 @@ func Search(o Options) ([]Result, error) {
 	if strings.TrimSpace(o.Query) == "" {
 		return nil, fmt.Errorf("query is required")
 	}
+	if o.Session != "" && o.Source == "" {
+		return nil, fmt.Errorf("session filter requires a source filter")
+	}
+	if (o.Source != "" && !safePart(o.Source)) || (o.Session != "" && !safePart(o.Session)) {
+		return nil, fmt.Errorf("invalid source or session filter")
+	}
 	if o.Limit <= 0 {
 		o.Limit = 8
 	}
 	terms := terms(o.Query)
 	var results []Result
 	if o.EpisodeRoot != "" {
-		paths, err := filepath.Glob(filepath.Join(o.EpisodeRoot, "*", "*", "*.md"))
+		paths, err := searchPaths(o.EpisodeRoot, o.Source, o.Session)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +87,7 @@ func Search(o Options) ([]Result, error) {
 		}
 	}
 	if o.CorpusRoot != "" {
-		paths, err := filepath.Glob(filepath.Join(o.CorpusRoot, "*", "*", "*.md"))
+		paths, err := searchPaths(o.CorpusRoot, o.Source, o.Session)
 		if err != nil {
 			return nil, err
 		}
@@ -113,6 +121,18 @@ func Search(o Options) ([]Result, error) {
 		results = results[:o.Limit]
 	}
 	return results, nil
+}
+
+func searchPaths(root, source, session string) ([]string, error) {
+	parts := []string{root}
+	if source == "" {
+		parts = append(parts, "*", "*", "*.md")
+	} else if session == "" {
+		parts = append(parts, source, "*", "*.md")
+	} else {
+		parts = append(parts, source, session, "*.md")
+	}
+	return filepath.Glob(filepath.Join(parts...))
 }
 
 // Wake favors compact episodes over raw transcript matches. It is the normal

@@ -83,6 +83,27 @@ func TestWakePrioritizesEpisodeOverHigherScoringRawMatch(t *testing.T) {
 	}
 }
 
+func TestSearchFiltersToOneKnownSession(t *testing.T) {
+	root := t.TempDir()
+	corpusRoot := filepath.Join(root, "corpus")
+	for _, session := range []string{"keep", "other"} {
+		chunk := corpus.Chunk{Source: "codex", Session: session, Index: 1, Items: []corpus.Item{{ID: "codex:" + session + "#L1", Line: 1, Role: corpus.RoleUser, Text: "Find relevant examples."}}}
+		if _, err := chunk.Write(corpusRoot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := Search(Options{CorpusRoot: corpusRoot, Source: "codex", Session: "keep", Query: "examples"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Ref != "transcript:codex/keep/0001" {
+		t.Fatalf("results = %#v", results)
+	}
+	if _, err := Search(Options{CorpusRoot: corpusRoot, Session: "keep", Query: "examples"}); err == nil {
+		t.Fatal("search accepted a session without its source")
+	}
+}
+
 func TestRelatedReadsExplicitContinuationOnly(t *testing.T) {
 	root := t.TempDir()
 	e := episode.Episode{ID: "ep-codex-session-0001", Source: "codex", Session: "session", Chunk: 1, Scope: "spindle", Continues: []episode.Link{{Ref: "artifact:docs/design.md", Why: "Current contract."}}}

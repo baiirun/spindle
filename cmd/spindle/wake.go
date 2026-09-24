@@ -10,9 +10,11 @@ import (
 	"spindle/internal/wake"
 )
 
-func retrievalFlags(fs *flag.FlagSet) (corpus, episodes, scope, query *string, limit *int, asJSON *bool) {
+func retrievalFlags(fs *flag.FlagSet) (corpus, episodes, source, session, scope, query *string, limit *int, asJSON *bool) {
 	corpus = fs.String("corpus", "data/corpus", "corpus root")
 	episodes = fs.String("episodes", defaultEpisodes, "episode root")
+	source = fs.String("source", "", "optional source name, e.g. codex")
+	session = fs.String("session", "", "optional source session ID; requires --source")
 	scope = fs.String("scope", "", "optional project, task, or other scope text")
 	query = fs.String("query", "", "retrieval query")
 	limit = fs.Int("limit", 8, "maximum results")
@@ -22,9 +24,9 @@ func retrievalFlags(fs *flag.FlagSet) (corpus, episodes, scope, query *string, l
 
 func runWake(args []string) error {
 	fs := flag.NewFlagSet("wake", flag.ExitOnError)
-	corpus, episodes, scope, query, limit, asJSON := retrievalFlags(fs)
+	corpus, episodes, source, session, scope, query, limit, asJSON := retrievalFlags(fs)
 	fs.Parse(args)
-	return printWakeResults("Wake", wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes, Scope: *scope, Query: *query, Limit: *limit}, *asJSON)
+	return printWakeResults("Wake", wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes, Source: *source, Session: *session, Scope: *scope, Query: *query, Limit: *limit}, *asJSON)
 }
 
 func runResume(args []string) error {
@@ -67,9 +69,9 @@ func runResume(args []string) error {
 
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	corpus, episodes, scope, query, limit, asJSON := retrievalFlags(fs)
+	corpus, episodes, source, session, scope, query, limit, asJSON := retrievalFlags(fs)
 	fs.Parse(args)
-	return printResults("Search", wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes, Scope: *scope, Query: *query, Limit: *limit}, *asJSON)
+	return printResults("Search", wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes, Source: *source, Session: *session, Scope: *scope, Query: *query, Limit: *limit}, *asJSON)
 }
 
 func printResults(title string, o wake.Options, asJSON bool) error {
