@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"spindle/internal/corpus"
@@ -117,8 +119,13 @@ type Options struct {
 	Session    string
 	Model      string
 	Continues  []Link // supplied by the external scheduler for session-level context
+	Workers    int    // chunks projected concurrently; 0 means DefaultWorkers
 	extract    extractorFunc
 }
+
+// DefaultWorkers bounds concurrent observer calls. Chunks only link to their
+// predecessor by reference, so they project independently.
+const DefaultWorkers = 8
 
 type extractorFunc func(context.Context, string, string, string, string, any) (llm.Result, error)
 
@@ -143,17 +150,34 @@ func Project(ctx context.Context, o Options) ([]Episode, error) {
 		o.Model = llm.Extractor
 	}
 
-	var episodes []Episode
+	workers := o.Workers
+	if workers <= 0 {
+		workers = DefaultWorkers
+	}
+	episodes := make([]Episode, len(chunks))
+	errs := make([]error, len(chunks))
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
 	for i, c := range chunks {
 		links := append([]Link(nil), o.Continues...)
 		if i > 0 {
 			links = []Link{{Ref: episodeRef(chunks[i-1]), Why: "Previous bounded range in this source session."}}
 		}
-		e, err := projectChunk(ctx, o, c, links, extract)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, c corpus.Chunk, links []Link) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			episodes[i], errs[i] = projectChunk(ctx, o, c, links, extract)
+		}(i, c, links)
+	}
+	wg.Wait()
+	// Keep the contiguous prefix of successes, matching the sequential contract
+	// callers rely on: episodes returned alongside an error are all valid.
+	for i, err := range errs {
 		if err != nil {
-			return episodes, err
+			return episodes[:i], err
 		}
-		episodes = append(episodes, e)
 	}
 	return episodes, nil
 }
@@ -171,10 +195,11 @@ func projectChunk(ctx context.Context, o Options, c corpus.Chunk, links []Link, 
 		return old, nil
 	}
 
-	known := map[string]bool{}
+	known := map[string]string{} // any accepted citation form → canonical item ID
 	var input strings.Builder
 	for _, it := range c.Items {
-		known[it.ID] = true
+		known[it.ID] = it.ID
+		known[fmt.Sprintf("L%d", it.Line)] = it.ID
 		fmt.Fprintf(&input, "[%s %s %s] %s\n", it.ID, it.Time.UTC().Format(time.RFC3339), it.Role, it.Text)
 	}
 	out, err := observe(ctx, o.Model, observerSystem, input.String(), extract)
@@ -214,7 +239,7 @@ func observe(ctx context.Context, model, system, input string, extract extractor
 	return out, nil
 }
 
-func observedEpisode(c corpus.Chunk, sourceHash, projectionHash string, links []Link, out observation, known map[string]bool) Episode {
+func observedEpisode(c corpus.Chunk, sourceHash, projectionHash string, links []Link, out observation, known map[string]string) Episode {
 	e := Episode{
 		ID: episodeID(c), Source: c.Source, Session: c.Session, Chunk: c.Index,
 		Start: c.Start, End: c.End, Scope: scope(c.Cwd), Status: StatusSummary, SourceHash: sourceHash, ProjectionHash: projectionHash, Continues: links,
@@ -244,7 +269,7 @@ func digest(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func validClaims(in []Claim, known map[string]bool) []Claim {
+func validClaims(in []Claim, known map[string]string) []Claim {
 	var out []Claim
 	for _, c := range in {
 		c.Text = strings.TrimSpace(c.Text)
@@ -256,7 +281,7 @@ func validClaims(in []Claim, known map[string]bool) []Claim {
 	return out
 }
 
-func firstValidClaim(in Claim, known map[string]bool) Claim {
+func firstValidClaim(in Claim, known map[string]string) Claim {
 	valid := validClaims([]Claim{in}, known)
 	if len(valid) == 0 {
 		return Claim{}
@@ -264,7 +289,7 @@ func firstValidClaim(in Claim, known map[string]bool) Claim {
 	return valid[0]
 }
 
-func validReferences(in []Reference, known map[string]bool) []Reference {
+func validReferences(in []Reference, known map[string]string) []Reference {
 	var out []Reference
 	for _, r := range in {
 		r.Kind, r.Ref, r.Why = strings.TrimSpace(r.Kind), strings.TrimSpace(r.Ref), strings.TrimSpace(r.Why)
@@ -276,13 +301,24 @@ func validReferences(in []Reference, known map[string]bool) []Reference {
 	return out
 }
 
-func validEvidence(in []string, known map[string]bool) []string {
+var lineSuffix = regexp.MustCompile(`L\d+$`)
+
+func validEvidence(in []string, known map[string]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, id := range in {
-		if known[id] && !seen[id] {
-			seen[id] = true
-			out = append(out, id)
+		canonical, ok := known[strings.TrimSpace(id)]
+		if !ok {
+			// Models often shorten "codex:01a07de8#L2934" to "L2934" or
+			// "01a07de8#L2934". Line numbers are unique within a session, so
+			// the trailing L<line> identifies the item unambiguously.
+			if m := lineSuffix.FindString(id); m != "" {
+				canonical, ok = known[m]
+			}
+		}
+		if ok && !seen[canonical] {
+			seen[canonical] = true
+			out = append(out, canonical)
 		}
 	}
 	return out

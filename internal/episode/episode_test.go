@@ -174,3 +174,17 @@ func TestProjectLeavesSourcePointerWhenObserverStaysEmpty(t *testing.T) {
 		t.Fatalf("fallback should be cached, calls = %d", calls)
 	}
 }
+
+// TestValidEvidenceAcceptsShortenedCitations covers the main cause of empty
+// episodes: models citing "L2934" or "01a07de8#L2934" instead of the full ID.
+func TestValidEvidenceAcceptsShortenedCitations(t *testing.T) {
+	known := map[string]string{
+		"codex:01a07de8#L2934": "codex:01a07de8#L2934", "L2934": "codex:01a07de8#L2934",
+		"codex:01a07de8#L2942": "codex:01a07de8#L2942", "L2942": "codex:01a07de8#L2942",
+	}
+	got := validEvidence([]string{"L2934", "01a07de8#L2942", "codex:01a07de8#L2934", "L9999", "nonsense"}, known)
+	want := []string{"codex:01a07de8#L2934", "codex:01a07de8#L2942"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("validEvidence = %v, want %v", got, want)
+	}
+}

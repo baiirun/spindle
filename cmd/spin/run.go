@@ -42,6 +42,7 @@ func runSleep(args []string) error {
 	session := fs.String("session", "", "source session ID")
 	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
 	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
+	workers := fs.Int("workers", episode.DefaultWorkers, "chunks projected concurrently")
 	noIngest := fs.Bool("no-ingest", false, "project the corpus as-is instead of refreshing the session's transcript first")
 	var continues linksFlag
 	fs.Var(&continues, "continue", "prior context link as REF=WHY (repeatable)")
@@ -80,7 +81,7 @@ func runSleep(args []string) error {
 	}
 	episodes, err := episode.Project(context.Background(), episode.Options{
 		CorpusRoot: *corpusRoot, OutRoot: *out, Source: *source, Session: *session,
-		Model: llm.Extractor, Continues: continues,
+		Model: llm.Extractor, Continues: continues, Workers: *workers,
 	})
 	if err != nil {
 		return err

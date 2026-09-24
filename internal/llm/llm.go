@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -224,6 +225,7 @@ func isLimitMessage(text string) bool {
 // and decodes it into out.
 func JSON(ctx context.Context, model, system, prompt, schema string, out any) (Result, error) {
 	res, err := Run(ctx, Request{Model: model, System: system, Prompt: prompt, Schema: schema})
+	debugDump(prompt, res, err)
 	if err != nil {
 		return res, err
 	}
@@ -251,4 +253,20 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// debugDump writes each structured call's prompt and raw output under
+// $SPINDLE_DEBUG_DIR when it's set, for inspecting projection failures.
+func debugDump(prompt string, res Result, err error) {
+	dir := os.Getenv("SPINDLE_DEBUG_DIR")
+	if dir == "" {
+		return
+	}
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	name := filepath.Join(dir, time.Now().Format("150405.000000000"))
+	_ = os.WriteFile(name+".prompt.txt", []byte(prompt), 0o644)
+	out := fmt.Sprintf("err: %v\n\ntext:\n%s\n\nstructured:\n%s\n", err, res.Text, res.Structured)
+	_ = os.WriteFile(name+".output.txt", []byte(out), 0o644)
 }
