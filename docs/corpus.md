@@ -7,9 +7,13 @@
 
 Only root sessions are ingested. Subagent threads are skipped.
 
+## Data root
+
+spindle keeps all durable data under `$SPINDLE_HOME` (default `~/.spindle`), independent of the working directory: `corpus/` for normalized transcripts and `episodes/<version>/` for projections. `SPINDLE_HOME` must be an absolute path. `--corpus` and `--episodes` override individual commands.
+
 ## Normalized form
 
-`spindle ingest` writes plain Markdown chunks to `data/corpus/<source>/<session>/<NNNN>.md`. The `data/` directory is gitignored, because transcripts are private.
+`spindle ingest` writes plain Markdown chunks to `$SPINDLE_HOME/corpus/<source>/<session>/<NNNN>.md`. Transcripts are private and never live in the repo.
 
 ```
 ---

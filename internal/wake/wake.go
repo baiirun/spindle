@@ -4,12 +4,15 @@
 package wake
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"spindle/internal/corpus"
 	"spindle/internal/episode"
@@ -31,6 +34,17 @@ type ResumeResult struct {
 	Latest     *Result        `json:"latest,omitempty"`
 	Continues  []episode.Link `json:"continues,omitempty"`
 	SourceOnly []Result       `json:"source_only,omitempty"`
+	// Projected and Captured bound the handoff: the latest usable episode
+	// covers the session through Projected, while the corpus holds it through
+	// Captured. SourceOnly lists every range in between that must be read raw.
+	Projected *Mark `json:"projected_through,omitempty"`
+	Captured  *Mark `json:"captured_through,omitempty"`
+}
+
+// Mark is a position in a source session: a chunk and the time of its last item.
+type Mark struct {
+	Chunk int       `json:"chunk"`
+	End   time.Time `json:"end"`
 }
 
 // Options selects the two rebuildable stores available to retrieval.
@@ -184,26 +198,91 @@ func Resume(o Options, source, session string) (ResumeResult, error) {
 		return unprojectedSession(o.CorpusRoot, source, session)
 	}
 	result := ResumeResult{}
+	latest := -1
 	for i := len(episodes) - 1; i >= 0; i-- {
-		e := episodes[i]
-		if e.Status == episode.StatusSourceOnly {
-			if i == len(episodes)-1 {
-				result.Continues = e.Continues
-			}
-			result.SourceOnly = append(result.SourceOnly, Result{
-				Ref: fmt.Sprintf("transcript:%s/%s/%04d", e.Source, e.Session, e.Chunk), Kind: "transcript",
-				Title: e.Title, Excerpt: "Source-only range; expand before relying on this handoff.",
-			})
+		if episodes[i].Status != episode.StatusSourceOnly {
+			latest = i
+			break
+		}
+	}
+	if latest >= 0 {
+		e := episodes[latest]
+		result.Latest = &Result{Ref: fmt.Sprintf("episode:%s/%s/%04d", e.Source, e.Session, e.Chunk), Kind: "episode", Title: e.Title}
+		result.Continues = e.Continues
+		result.Projected = &Mark{Chunk: e.Chunk, End: e.End}
+	} else {
+		result.Continues = episodes[len(episodes)-1].Continues
+	}
+	projectedChunk := 0
+	if latest >= 0 {
+		projectedChunk = episodes[latest].Chunk
+	}
+	if o.CorpusRoot == "" {
+		// Without the corpus, only recorded source-only episodes can be listed.
+		for _, e := range episodes[latest+1:] {
+			result.SourceOnly = append(result.SourceOnly, rawRange(e.Source, e.Session, e.Chunk, e.Title, "Source-only range; expand before relying on this handoff."))
+		}
+		return result, nil
+	}
+	return withRawTail(result, o.CorpusRoot, source, session, episodes, projectedChunk)
+}
+
+// withRawTail compares the corpus with the recorded episodes. Every chunk from
+// the latest usable episode onward that lacks a current summary goes into the
+// raw tail: source-only projections, chunks never projected, and chunks whose
+// content changed after projection (typically a final chunk that kept growing).
+func withRawTail(result ResumeResult, corpusRoot, source, session string, episodes []episode.Episode, projectedChunk int) (ResumeResult, error) {
+	paths, err := filepath.Glob(filepath.Join(corpusRoot, source, session, "*.md"))
+	if err != nil {
+		return result, err
+	}
+	sort.Strings(paths)
+	byChunk := map[int]episode.Episode{}
+	for _, e := range episodes {
+		byChunk[e.Chunk] = e
+	}
+	for _, p := range paths {
+		h, err := corpus.ReadChunkHeader(p)
+		if err != nil {
+			return result, err
+		}
+		if result.Captured == nil || h.Index > result.Captured.Chunk {
+			result.Captured = &Mark{Chunk: h.Index, End: h.End}
+		}
+		if h.Index < projectedChunk {
 			continue
 		}
-		latest := Result{Ref: fmt.Sprintf("episode:%s/%s/%04d", e.Source, e.Session, e.Chunk), Kind: "episode", Title: e.Title}
-		result.Latest, result.Continues = &latest, e.Continues
-		break
-	}
-	for left, right := 0, len(result.SourceOnly)-1; left < right; left, right = left+1, right-1 {
-		result.SourceOnly[left], result.SourceOnly[right] = result.SourceOnly[right], result.SourceOnly[left]
+		e, projected := byChunk[h.Index]
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return result, err
+		}
+		changed := projected && e.SourceHash != "" && e.SourceHash != sourceDigest(raw)
+		switch {
+		case h.Index == projectedChunk && !changed:
+			continue // covered by the latest usable episode
+		case changed:
+			result.SourceOnly = append(result.SourceOnly, rawRange(source, session, h.Index, e.Title,
+				fmt.Sprintf("Changed since projection: the episode covers through %s; read the raw range for anything later.", e.End.UTC().Format(time.RFC3339))))
+		case !projected:
+			result.SourceOnly = append(result.SourceOnly, rawRange(source, session, h.Index, fmt.Sprintf("Unprojected raw range %d", h.Index),
+				"Not yet projected; expand this raw range before relying on the handoff."))
+		case e.Status == episode.StatusSourceOnly:
+			result.SourceOnly = append(result.SourceOnly, rawRange(source, session, h.Index, e.Title,
+				"Source-only range; expand before relying on this handoff."))
+		}
 	}
 	return result, nil
+}
+
+func rawRange(source, session string, chunk int, title, why string) Result {
+	return Result{Ref: fmt.Sprintf("transcript:%s/%s/%04d", source, session, chunk), Kind: "transcript", Title: title, Excerpt: why}
+}
+
+// sourceDigest matches the hash episode projection stores for its source chunk.
+func sourceDigest(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func unprojectedSession(corpusRoot, source, session string) (ResumeResult, error) {
@@ -218,6 +297,8 @@ func unprojectedSession(corpusRoot, source, session string) (ResumeResult, error
 		return ResumeResult{}, fmt.Errorf("session %s:%s was not found in episodes or corpus", source, session)
 	}
 	result := ResumeResult{SourceOnly: make([]Result, 0, len(chunks))}
+	last := chunks[len(chunks)-1]
+	result.Captured = &Mark{Chunk: last.Index, End: last.End}
 	for _, chunk := range chunks {
 		result.SourceOnly = append(result.SourceOnly, Result{
 			Ref:     fmt.Sprintf("transcript:%s/%s/%04d", source, session, chunk.Index),

@@ -18,7 +18,6 @@ import (
 )
 
 const defaultNotes = "data/memory/" + sleep.PromptVersion // legacy decision-eval fixture
-const defaultEpisodes = "data/episodes/" + episode.PromptVersion
 
 type linksFlag []episode.Link
 
@@ -35,8 +34,8 @@ func (f *linksFlag) Set(value string) error {
 
 func runSleep(args []string) error {
 	fs := flag.NewFlagSet("sleep", flag.ExitOnError)
-	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
-	out := fs.String("out", defaultEpisodes, "episode root")
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	out := fs.String("out", roots.Episodes, "episode root")
 	source := fs.String("source", "", "source name, e.g. codex")
 	session := fs.String("session", "", "source session ID")
 	var continues linksFlag
@@ -58,7 +57,7 @@ func runSleep(args []string) error {
 
 func evalRun(args []string) error {
 	fs := flag.NewFlagSet("eval run", flag.ExitOnError)
-	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	itemsPath := fs.String("items", "data/eval/decisions-v0.jsonl", "labeled eval set")
 	armName := fs.String("arm", "D1", "D0 | D1 | D2 | D2n")
 	notes := fs.String("notes", defaultNotes, "decision notes root for D2/D2n")

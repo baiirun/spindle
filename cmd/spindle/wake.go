@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"spindle/internal/wake"
 )
 
 func retrievalFlags(fs *flag.FlagSet) (corpus, episodes, source, session, scope, query *string, limit *int, asJSON *bool) {
-	corpus = fs.String("corpus", "data/corpus", "corpus root")
-	episodes = fs.String("episodes", defaultEpisodes, "episode root")
+	corpus = fs.String("corpus", roots.Corpus, "corpus root")
+	episodes = fs.String("episodes", roots.Episodes, "episode root")
 	source = fs.String("source", "", "optional source name, e.g. codex")
 	session = fs.String("session", "", "optional source session ID; requires --source")
 	scope = fs.String("scope", "", "optional project, task, or other scope text")
@@ -31,8 +32,8 @@ func runWake(args []string) error {
 
 func runResume(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
-	corpus := fs.String("corpus", "data/corpus", "corpus root")
-	episodes := fs.String("episodes", defaultEpisodes, "episode root")
+	corpus := fs.String("corpus", roots.Corpus, "corpus root")
+	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	source := fs.String("source", "", "source name, e.g. codex")
 	session := fs.String("session", "", "source session ID")
 	asJSON := fs.Bool("json", false, "write machine-readable JSON")
@@ -48,6 +49,12 @@ func runResume(args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	fmt.Println("# Resume")
+	fmt.Println()
+	fmt.Printf("- projected through: %s\n", markText(result.Projected))
+	fmt.Printf("- captured through:  %s\n", markText(result.Captured))
+	if len(result.SourceOnly) > 0 {
+		fmt.Printf("- raw tail: %d range(s) after the latest episode; expand them before relying on it\n", len(result.SourceOnly))
+	}
 	if result.Latest != nil {
 		text, err := wake.Read(wake.Options{EpisodeRoot: *episodes}, result.Latest.Ref)
 		if err != nil {
@@ -61,7 +68,7 @@ func runResume(args []string) error {
 	if len(result.SourceOnly) > 0 {
 		fmt.Println("\n## Source-only ranges to expand")
 		for _, source := range result.SourceOnly {
-			fmt.Printf("- `%s` — %s\n", source.Ref, source.Title)
+			fmt.Printf("- `%s` — %s: %s\n", source.Ref, source.Title, source.Excerpt)
 		}
 	}
 	return nil
@@ -104,8 +111,8 @@ func renderResults(title string, results []wake.Result, err error, asJSON bool) 
 
 func runRead(args []string) error {
 	fs := flag.NewFlagSet("read", flag.ExitOnError)
-	corpus := fs.String("corpus", "data/corpus", "corpus root")
-	episodes := fs.String("episodes", defaultEpisodes, "episode root")
+	corpus := fs.String("corpus", roots.Corpus, "corpus root")
+	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		return fmt.Errorf("read requires one episode, transcript, or source item reference")
@@ -120,7 +127,7 @@ func runRead(args []string) error {
 
 func runRelated(args []string) error {
 	fs := flag.NewFlagSet("related", flag.ExitOnError)
-	episodes := fs.String("episodes", defaultEpisodes, "episode root")
+	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		return fmt.Errorf("related requires one episode: reference")
@@ -137,4 +144,11 @@ func runRelated(args []string) error {
 		fmt.Printf("%s — %s\n", link.Ref, strings.TrimSpace(link.Why))
 	}
 	return nil
+}
+
+func markText(m *wake.Mark) string {
+	if m == nil {
+		return "none"
+	}
+	return fmt.Sprintf("chunk %04d, %s", m.Chunk, m.End.UTC().Format(time.RFC3339))
 }

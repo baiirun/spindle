@@ -29,6 +29,10 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	if err := loadRoots(); err != nil {
+		fmt.Fprintln(os.Stderr, "spindle:", err)
+		os.Exit(1)
+	}
 	var err error
 	switch os.Args[1] {
 	case "ingest":
@@ -62,7 +66,7 @@ func runIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
 	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
-	out := fs.String("out", "data/corpus", "corpus output root")
+	out := fs.String("out", roots.Corpus, "corpus output root")
 	fs.Parse(args)
 
 	var sessions, chunks, skipped int

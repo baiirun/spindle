@@ -35,8 +35,8 @@ func runEval(args []string) error {
 
 func evalContinue(args []string) error {
 	fs := flag.NewFlagSet("eval continue", flag.ExitOnError)
-	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
-	episodeRoot := fs.String("episodes", defaultEpisodes, "episode root")
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	episodeRoot := fs.String("episodes", roots.Episodes, "episode root")
 	source := fs.String("source", "", "source name, e.g. codex")
 	session := fs.String("session", "", "source session ID")
 	task := fs.String("task", "", "continuation task for the fresh agent")
@@ -65,7 +65,7 @@ func evalContinue(args []string) error {
 
 func evalMine(args []string) error {
 	fs := flag.NewFlagSet("eval mine", flag.ExitOnError)
-	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	slice := fs.String("slice", "Zaum", "only sessions whose cwd contains this")
 	out := fs.String("out", "data/eval/candidates.jsonl", "classified candidates")
 	model := fs.String("model", llm.Classifier, "classifier model")
@@ -91,7 +91,7 @@ func evalMine(args []string) error {
 
 func evalLabel(args []string) error {
 	fs := flag.NewFlagSet("eval label", flag.ExitOnError)
-	corpusRoot := fs.String("corpus", "data/corpus", "corpus root")
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	in := fs.String("in", "data/eval/candidates.jsonl", "classified candidates")
 	out := fs.String("out", "data/eval/decisions-v0.jsonl", "labeled eval set")
 	workers := fs.Int("workers", 4, "parallel calls")

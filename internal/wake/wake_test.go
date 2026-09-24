@@ -1,10 +1,12 @@
 package wake
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"spindle/internal/corpus"
 	"spindle/internal/episode"
@@ -177,5 +179,57 @@ func TestResumeFallsBackToUnprojectedCorpusSession(t *testing.T) {
 	}
 	if result.SourceOnly[0].Ref != "transcript:codex/session/0001" || result.SourceOnly[1].Ref != "transcript:codex/session/0002" {
 		t.Fatalf("source-only = %#v", result.SourceOnly)
+	}
+}
+
+// TestResumeReportsGapAfterLatestEpisode covers the freshness contract: a
+// final chunk that grew after projection and a chunk never projected both
+// land in the raw tail, and the marks bound the gap.
+func TestResumeReportsGapAfterLatestEpisode(t *testing.T) {
+	root := t.TempDir()
+	corpusRoot, episodeRoot := filepath.Join(root, "corpus"), filepath.Join(root, "episodes")
+	t0 := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	chunk := func(index int, texts ...string) corpus.Chunk {
+		c := corpus.Chunk{Source: "codex", Session: "session", Index: index}
+		for i, text := range texts {
+			c.Items = append(c.Items, corpus.Item{ID: corpus.ItemID("codex", "session", index*10+i), Line: index*10 + i, Time: t0.Add(time.Duration(index*10+i) * time.Minute), Role: corpus.RoleUser, Text: text})
+		}
+		c.Start, c.End = c.Items[0].Time, c.Items[len(c.Items)-1].Time
+		return c
+	}
+	write := func(c corpus.Chunk) string {
+		p, err := c.Write(corpusRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// Project chunks 1 and 2 as they were, then let chunk 2 grow and chunk 3 appear.
+	for _, c := range []corpus.Chunk{chunk(1, "one"), chunk(2, "two")} {
+		raw, _ := os.ReadFile(write(c))
+		e := episode.Episode{ID: fmt.Sprintf("ep-codex-session-%04d", c.Index), Source: "codex", Session: "session", Chunk: c.Index, Scope: "spindle", Status: episode.StatusSummary, Title: fmt.Sprintf("Range %d", c.Index), End: c.End, SourceHash: sourceDigest(raw), Purpose: episode.Claim{Text: "work", Evidence: []string{c.Items[0].ID}}}
+		if err := episode.Write(episodeRoot, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(chunk(2, "two", "two more"))
+	grown := chunk(3, "three")
+	write(grown)
+
+	result, err := Resume(Options{CorpusRoot: corpusRoot, EpisodeRoot: episodeRoot}, "codex", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Latest == nil || result.Latest.Ref != "episode:codex/session/0002" {
+		t.Fatalf("latest = %#v", result.Latest)
+	}
+	if result.Projected == nil || result.Projected.Chunk != 2 || result.Captured == nil || result.Captured.Chunk != 3 || !result.Captured.End.Equal(grown.End) {
+		t.Fatalf("projected = %#v, captured = %#v", result.Projected, result.Captured)
+	}
+	if len(result.SourceOnly) != 2 || result.SourceOnly[0].Ref != "transcript:codex/session/0002" || result.SourceOnly[1].Ref != "transcript:codex/session/0003" {
+		t.Fatalf("raw tail = %#v", result.SourceOnly)
+	}
+	if !strings.Contains(result.SourceOnly[0].Excerpt, "Changed since projection") {
+		t.Fatalf("grown chunk reason = %q", result.SourceOnly[0].Excerpt)
 	}
 }
