@@ -25,8 +25,11 @@ or a live agent inbox.
 - Consecutive ranges from a source session MUST link to the preceding episode.
 - An external caller MAY supply typed continuation links. They MUST be labeled
   as carried context, not as observations from the current source range.
-- Agents MUST NOT write episodes. The read interface is `wake`, `search`,
-  `read`, and `related`.
+- Agents MUST NOT write episodes. The read interface is `resume`, `wake`,
+  `search`, `read`, and `related`.
+- A `summary` episode contains an evidence-linked handoff. A `source-only`
+  episode records that compaction failed and points to its bounded raw range;
+  it MUST NOT be presented as a usable summary.
 - `wake` SHOULD return episode matches before raw transcript matches, while
   leaving raw evidence available for verification.
 
@@ -34,7 +37,7 @@ or a live agent inbox.
 
 Episodes are plain Markdown under
 `data/episodes/episodes-v2/<source>/<session>/<chunk>.md`. Frontmatter holds
-the stable identity, source range, scope, source hash, projection hash, and continuation links.
+the stable identity, source range, scope, status, source hash, projection hash, and continuation links.
 The body holds purpose, observations, outputs, open threads, and references,
 with inline transcript citations.
 
@@ -42,6 +45,7 @@ with inline transcript citations.
 
 ```text
 spindle sleep --source codex --session <session-id>
+spindle resume --source codex --session <session-id>
 spindle wake --scope spindle --query "durable compaction"
 spindle search --scope spindle --query "episode format"
 spindle read episode:codex/<session-id>/0001
@@ -50,6 +54,11 @@ spindle related episode:codex/<session-id>/0002
 
 `sleep --continue REF=WHY` lets the external scheduler carry a known episode,
 artifact, task, or source reference into the first episode of a new session.
+
+`resume` is the normal warm start. It returns the latest usable episode for a
+known source session, its carried links, and any newer `source-only` ranges
+that should be read directly. `wake` is for cold-start discovery when the
+harness has no prior-session handle.
 
 ## Implementation model
 

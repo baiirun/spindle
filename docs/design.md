@@ -12,7 +12,7 @@ gives agents read-only ways to discover and expand them.
 ```text
 raw session events and artifacts
   → durable, evidence-linked episodes
-  → wake/search/read during later work
+  → resume a known session, or wake/search/read during cold start
   → optional consolidation when episode navigation no longer stays bounded
 ```
 
@@ -42,8 +42,11 @@ requirement for work to be recorded.
   stable item IDs.
 - `sleep`: project one selected session into bounded handoff episodes. The
   external caller decides when a session is idle or complete.
+- `resume`: warm-start a replacement agent from the latest usable episode of a
+  known source session. It exposes trailing source-only ranges instead of
+  presenting a failed compaction as a handoff.
 - `wake`: return compact matching episodes and source passages for a scope and
-  query.
+  query when there is no known prior-session handle.
 - `search`, `read`, `related`: let an agent expand beyond an episode without
   receiving a giant fixed briefing.
 - `dream`: not built. It is justified only when episodes and link-following no

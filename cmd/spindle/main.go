@@ -17,6 +17,7 @@ commands:
   ingest   normalize Codex and Claude transcripts into Markdown chunks
   sleep    project one source session into durable handoff episodes
   wake     return a bounded, read-only continuity context
+  resume   return the startup packet for a known prior session
   search   find episodes and transcript passages
   read     expand an episode or transcript reference
   related  follow explicit episode continuation links
@@ -36,6 +37,8 @@ func main() {
 		err = runSleep(os.Args[2:])
 	case "wake":
 		err = runWake(os.Args[2:])
+	case "resume":
+		err = runResume(os.Args[2:])
 	case "search":
 		err = runSearch(os.Args[2:])
 	case "read":

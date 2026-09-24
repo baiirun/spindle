@@ -27,6 +27,43 @@ func runWake(args []string) error {
 	return printWakeResults("Wake", wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes, Scope: *scope, Query: *query, Limit: *limit}, *asJSON)
 }
 
+func runResume(args []string) error {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	episodes := fs.String("episodes", defaultEpisodes, "episode root")
+	source := fs.String("source", "", "source name, e.g. codex")
+	session := fs.String("session", "", "source session ID")
+	asJSON := fs.Bool("json", false, "write machine-readable JSON")
+	fs.Parse(args)
+	if *source == "" || *session == "" {
+		return fmt.Errorf("resume requires --source and --session")
+	}
+	result, err := wake.Resume(wake.Options{EpisodeRoot: *episodes}, *source, *session)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+	fmt.Println("# Resume")
+	if result.Latest != nil {
+		text, err := wake.Read(wake.Options{EpisodeRoot: *episodes}, result.Latest.Ref)
+		if err != nil {
+			return err
+		}
+		fmt.Print("\n## Latest usable episode\n\n")
+		fmt.Print(text)
+	} else {
+		fmt.Println("\nNo usable episode was recorded; start from the source-only range below.")
+	}
+	if len(result.SourceOnly) > 0 {
+		fmt.Println("\n## Source-only ranges to expand")
+		for _, source := range result.SourceOnly {
+			fmt.Printf("- `%s` — %s\n", source.Ref, source.Title)
+		}
+	}
+	return nil
+}
+
 func runSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	corpus, episodes, scope, query, limit, asJSON := retrievalFlags(fs)

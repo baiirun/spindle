@@ -157,6 +157,16 @@ func TestProjectLeavesSourcePointerWhenObserverStaysEmpty(t *testing.T) {
 	if calls != 2 || len(episodes[0].References) != 1 || episodes[0].References[0].Ref != "transcript:codex/session-123/0001" {
 		t.Fatalf("calls = %d, episode = %#v", calls, episodes[0])
 	}
+	if episodes[0].Status != StatusSourceOnly {
+		t.Fatalf("status = %q, want %q", episodes[0].Status, StatusSourceOnly)
+	}
+	persisted, err := ReadPath(Path(outRoot, "codex", "session-123", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != StatusSourceOnly {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, StatusSourceOnly)
+	}
 	if _, err := Project(context.Background(), Options{CorpusRoot: corpusRoot, OutRoot: outRoot, Source: "codex", Session: "session-123", extract: extract}); err != nil {
 		t.Fatal(err)
 	}

@@ -21,6 +21,11 @@ import (
 // PromptVersion invalidates cached projections when their contract changes.
 const PromptVersion = "episodes-v2"
 
+const (
+	StatusSummary    = "summary"
+	StatusSourceOnly = "source-only"
+)
+
 const observerSystem = `You are a background observer producing a durable handoff episode from a bounded range of an agent transcript.
 
 Describe only what the transcript supports. This is not a decision extractor. Capture the work's purpose, concrete observations, outputs or artifacts, and open threads that a later agent would need to continue correctly. Include a decision only when it materially changes future work.
@@ -91,6 +96,7 @@ type Episode struct {
 	Start            time.Time   `json:"start"`
 	End              time.Time   `json:"end"`
 	Scope            string      `json:"scope"`
+	Status           string      `json:"status"`
 	SourceHash       string      `json:"source_hash"`
 	ProjectionHash   string      `json:"projection_hash"`
 	Title            string      `json:"title"`
@@ -183,6 +189,7 @@ func projectChunk(ctx context.Context, o Options, c corpus.Chunk, links []Link, 
 	}
 	if !hasContent(e) {
 		e.References = []Reference{fallbackReference(c)}
+		e.Status = StatusSourceOnly
 	}
 	if err := Write(o.OutRoot, e); err != nil {
 		return Episode{}, err
@@ -210,7 +217,7 @@ func observe(ctx context.Context, model, system, input string, extract extractor
 func observedEpisode(c corpus.Chunk, sourceHash, projectionHash string, links []Link, out observation, known map[string]bool) Episode {
 	e := Episode{
 		ID: episodeID(c), Source: c.Source, Session: c.Session, Chunk: c.Index,
-		Start: c.Start, End: c.End, Scope: scope(c.Cwd), SourceHash: sourceHash, ProjectionHash: projectionHash, Continues: links,
+		Start: c.Start, End: c.End, Scope: scope(c.Cwd), Status: StatusSummary, SourceHash: sourceHash, ProjectionHash: projectionHash, Continues: links,
 		Title: strings.TrimSpace(out.Title), Purpose: firstValidClaim(out.Purpose, known),
 		Observations: validClaims(out.Observations, known), Outputs: validClaims(out.Outputs, known),
 		OpenThreads: validClaims(out.OpenThreads, known), References: validReferences(out.References, known),
@@ -312,8 +319,12 @@ func Write(root string, e Episode) error {
 
 func render(e Episode) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "---\nid: %s\nkind: episode\nsource: %s\nsession: %s\nchunk: %d\nstart: %s\nend: %s\nscope: %s\nsource_hash: %s\nprojection_hash: %s\n",
-		e.ID, e.Source, e.Session, e.Chunk, e.Start.UTC().Format(time.RFC3339), e.End.UTC().Format(time.RFC3339), e.Scope, e.SourceHash, e.ProjectionHash)
+	status := e.Status
+	if status == "" {
+		status = StatusSummary
+	}
+	fmt.Fprintf(&b, "---\nid: %s\nkind: episode\nsource: %s\nsession: %s\nchunk: %d\nstart: %s\nend: %s\nscope: %s\nstatus: %s\nsource_hash: %s\nprojection_hash: %s\n",
+		e.ID, e.Source, e.Session, e.Chunk, e.Start.UTC().Format(time.RFC3339), e.End.UTC().Format(time.RFC3339), e.Scope, status, e.SourceHash, e.ProjectionHash)
 	for _, l := range e.Continues {
 		fmt.Fprintf(&b, "continue: %s | %s\n", l.Ref, oneLine(l.Why))
 	}
@@ -388,6 +399,8 @@ func ReadPath(path string) (Episode, error) {
 			e.End, _ = time.Parse(time.RFC3339, v)
 		case "scope":
 			e.Scope = v
+		case "status":
+			e.Status = v
 		case "source_hash":
 			e.SourceHash = v
 		case "projection_hash":
@@ -403,12 +416,38 @@ func ReadPath(path string) (Episode, error) {
 			break
 		}
 	}
+	sourceOnly := strings.Contains(parts[2], "Observer produced no evidence-linked summary")
+	if e.Status == "" {
+		if sourceOnly {
+			e.Status = StatusSourceOnly
+		} else {
+			e.Status = StatusSummary
+		}
+	}
 	e.persistedContent = strings.Contains(parts[2], "\n## Purpose\n") ||
 		strings.Contains(parts[2], "\n## Observed\n") ||
 		strings.Contains(parts[2], "\n## Outputs\n") ||
 		strings.Contains(parts[2], "\n## Open threads\n") ||
-		strings.Contains(parts[2], "\n- source `")
+		sourceOnly || strings.Contains(parts[2], "\n- source `")
 	return e, nil
+}
+
+// ReadSession returns one source session's episodes in chunk order.
+func ReadSession(root, source, session string) ([]Episode, error) {
+	paths, err := filepath.Glob(filepath.Join(root, source, session, "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	result := make([]Episode, 0, len(paths))
+	for _, path := range paths {
+		e, err := ReadPath(path)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, e)
+	}
+	return result, nil
 }
 
 // ReadAll returns all persisted episodes in deterministic order.

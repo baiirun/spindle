@@ -23,6 +23,14 @@ type Result struct {
 	Score   int    `json:"score"`
 }
 
+// ResumeResult is the compact startup packet for a known prior session.
+// Latest is nil only when every recorded range is source-only.
+type ResumeResult struct {
+	Latest     *Result        `json:"latest,omitempty"`
+	Continues  []episode.Link `json:"continues,omitempty"`
+	SourceOnly []Result       `json:"source_only,omitempty"`
+}
+
 // Options selects the two rebuildable stores available to retrieval.
 type Options struct {
 	CorpusRoot  string
@@ -132,6 +140,46 @@ func Wake(o Options) ([]Result, error) {
 		results = results[:limit]
 	}
 	return results, nil
+}
+
+// Resume returns the latest usable episode for a known session, its immediate
+// carried context, and any newer source-only ranges that must be expanded from
+// raw transcript. It is the warm-start counterpart to query-based Wake.
+func Resume(o Options, source, session string) (ResumeResult, error) {
+	if o.EpisodeRoot == "" {
+		return ResumeResult{}, fmt.Errorf("episode retrieval is not configured")
+	}
+	if !safePart(source) || !safePart(session) {
+		return ResumeResult{}, fmt.Errorf("invalid source or session")
+	}
+	episodes, err := episode.ReadSession(o.EpisodeRoot, source, session)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+	if len(episodes) == 0 {
+		return ResumeResult{}, fmt.Errorf("session %s:%s has no episodes", source, session)
+	}
+	result := ResumeResult{}
+	for i := len(episodes) - 1; i >= 0; i-- {
+		e := episodes[i]
+		if e.Status == episode.StatusSourceOnly {
+			if i == len(episodes)-1 {
+				result.Continues = e.Continues
+			}
+			result.SourceOnly = append(result.SourceOnly, Result{
+				Ref: fmt.Sprintf("transcript:%s/%s/%04d", e.Source, e.Session, e.Chunk), Kind: "transcript",
+				Title: e.Title, Excerpt: "Source-only range; expand before relying on this handoff.",
+			})
+			continue
+		}
+		latest := Result{Ref: fmt.Sprintf("episode:%s/%s/%04d", e.Source, e.Session, e.Chunk), Kind: "episode", Title: e.Title}
+		result.Latest, result.Continues = &latest, e.Continues
+		break
+	}
+	for left, right := 0, len(result.SourceOnly)-1; left < right; left, right = left+1, right-1 {
+		result.SourceOnly[left], result.SourceOnly[right] = result.SourceOnly[right], result.SourceOnly[left]
+	}
+	return result, nil
 }
 
 // Read expands a source selected by Search. It rejects path traversal and
@@ -257,10 +305,14 @@ func parseRef(ref string) (kind, source, session string, chunk int, err error) {
 		return
 	}
 	source, session = parts[0], parts[1]
-	if strings.ContainsAny(source+session, `\\`) || strings.Contains(source+session, "..") {
+	if !safePart(source) || !safePart(session) {
 		err = fmt.Errorf("invalid ref %q", ref)
 	}
 	return
+}
+
+func safePart(value string) bool {
+	return value != "" && !strings.ContainsAny(value, `/\\`) && !strings.Contains(value, "..")
 }
 
 func sourceParts(path string) (source, session string, chunk int, ok bool) {

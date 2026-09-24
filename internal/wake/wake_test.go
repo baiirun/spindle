@@ -79,3 +79,43 @@ func TestRelatedReadsExplicitContinuationOnly(t *testing.T) {
 		t.Fatalf("links = %#v", links)
 	}
 }
+
+func TestResumeUsesLatestSummaryAndSurfacesTrailingSourceOnlyRange(t *testing.T) {
+	root := t.TempDir()
+	first := episode.Episode{ID: "ep-codex-session-0001", Source: "codex", Session: "session", Chunk: 1, Scope: "spindle", Status: episode.StatusSummary, Title: "Earlier handoff", Continues: []episode.Link{{Ref: "artifact:docs/design.md", Why: "Current contract."}}}
+	if err := episode.Write(root, first); err != nil {
+		t.Fatal(err)
+	}
+	fallback := episode.Episode{ID: "ep-codex-session-0002", Source: "codex", Session: "session", Chunk: 2, Scope: "spindle", Status: episode.StatusSourceOnly, Title: "Uncompacted terminal range", References: []episode.Reference{{Kind: "source", Ref: "transcript:codex/session/0002", Why: "Expand source.", Evidence: []string{"codex:session#L2"}}}}
+	if err := episode.Write(root, fallback); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Resume(Options{EpisodeRoot: root}, "codex", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Latest == nil || result.Latest.Ref != "episode:codex/session/0001" {
+		t.Fatalf("latest = %#v", result.Latest)
+	}
+	if len(result.Continues) != 1 || result.Continues[0].Ref != "artifact:docs/design.md" {
+		t.Fatalf("continues = %#v", result.Continues)
+	}
+	if len(result.SourceOnly) != 1 || result.SourceOnly[0].Ref != "transcript:codex/session/0002" {
+		t.Fatalf("source-only = %#v", result.SourceOnly)
+	}
+}
+
+func TestResumeReturnsSourceOnlyWhenNoSummaryExists(t *testing.T) {
+	root := t.TempDir()
+	fallback := episode.Episode{ID: "ep-codex-session-0001", Source: "codex", Session: "session", Chunk: 1, Scope: "spindle", Status: episode.StatusSourceOnly, Title: "Uncompacted range", Continues: []episode.Link{{Ref: "artifact:docs/design.md", Why: "Current contract."}}, References: []episode.Reference{{Kind: "source", Ref: "transcript:codex/session/0001", Why: "Expand source.", Evidence: []string{"codex:session#L1"}}}}
+	if err := episode.Write(root, fallback); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Resume(Options{EpisodeRoot: root}, "codex", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Latest != nil || len(result.SourceOnly) != 1 || len(result.Continues) != 1 || result.Continues[0].Ref != "artifact:docs/design.md" {
+		t.Fatalf("resume = %#v", result)
+	}
+}
