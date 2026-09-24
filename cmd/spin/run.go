@@ -43,6 +43,7 @@ func runSleep(args []string) error {
 	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
 	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
 	workers := fs.Int("workers", episode.DefaultWorkers, "chunks projected concurrently")
+	before := fs.String("before", "", "only project chunks that ended before this RFC 3339 time")
 	noIngest := fs.Bool("no-ingest", false, "project the corpus as-is instead of refreshing the session's transcript first")
 	var continues linksFlag
 	fs.Var(&continues, "continue", "prior context link as REF=WHY (repeatable)")
@@ -79,9 +80,17 @@ func runSleep(args []string) error {
 		}
 		fmt.Printf("ingested %s:%s → %d chunk(s)\n", *source, *session, n)
 	}
+	var beforeT time.Time
+	if *before != "" {
+		t, err := time.Parse(time.RFC3339, *before)
+		if err != nil {
+			return fmt.Errorf("--before: %w", err)
+		}
+		beforeT = t
+	}
 	episodes, err := episode.Project(context.Background(), episode.Options{
 		CorpusRoot: *corpusRoot, OutRoot: *out, Source: *source, Session: *session,
-		Model: llm.Extractor, Continues: continues, Workers: *workers,
+		Model: llm.Extractor, Continues: continues, Workers: *workers, Before: beforeT,
 	})
 	if err != nil {
 		return err

@@ -118,8 +118,9 @@ type Options struct {
 	Source     string
 	Session    string
 	Model      string
-	Continues  []Link // supplied by the external scheduler for session-level context
-	Workers    int    // chunks projected concurrently; 0 means DefaultWorkers
+	Continues  []Link    // supplied by the external scheduler for session-level context
+	Workers    int       // chunks projected concurrently; 0 means DefaultWorkers
+	Before     time.Time // if set, only project chunks that ended before it
 	extract    extractorFunc
 }
 
@@ -141,6 +142,13 @@ func Project(ctx context.Context, o Options) ([]Episode, error) {
 	}
 	if len(chunks) == 0 {
 		return nil, fmt.Errorf("session %s:%s has no chunks", o.Source, o.Session)
+	}
+	if !o.Before.IsZero() {
+		n := 0
+		for n < len(chunks) && chunks[n].End.Before(o.Before) {
+			n++
+		}
+		chunks = chunks[:n]
 	}
 	extract := o.extract
 	if extract == nil {
