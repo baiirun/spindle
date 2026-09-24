@@ -44,13 +44,13 @@ with inline transcript citations.
 ## Interfaces
 
 ```text
-spindle sleep --source codex --session <session-id>
-spindle resume --source codex --session <session-id>
-spindle wake --scope spindle --query "durable compaction"
-spindle search --scope spindle --query "episode format"
-spindle search --source codex --session <session-id> --query "research examples"
-spindle read episode:codex/<session-id>/0001
-spindle related episode:codex/<session-id>/0002
+spin sleep --source codex --session <session-id>
+spin resume --source codex --session <session-id>
+spin wake --scope spindle --query "durable compaction"
+spin search --scope spindle --query "episode format"
+spin search --source codex --session <session-id> --query "research examples"
+spin read episode:codex/<session-id>/0001
+spin related episode:codex/<session-id>/0002
 ```
 
 `sleep --continue REF=WHY` lets the external scheduler carry a known episode,

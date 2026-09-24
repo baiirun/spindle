@@ -8,9 +8,9 @@ and score their retrieval trace and ability to continue useful work.
 
 ## Continuation trial
 
-`spindle eval continue --source <source> --session <id> --task "..."` runs one
+`spin eval continue --source <source> --session <id> --task "..."` runs one
 fresh Luna agent from the Spindle checkout. Its startup instruction contains the
-known prior-session handle and requires `spindle resume` before it works. The
+known prior-session handle and requires `spin resume` before it works. The
 run records the answer and tool trace in `runs/.../continuation.json` and fails
 if the agent does not successfully invoke `resume`.
 

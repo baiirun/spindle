@@ -13,7 +13,7 @@ spindle keeps all durable data under `$SPINDLE_HOME` (default `~/.spindle`), ind
 
 ## Normalized form
 
-`spindle ingest` writes plain Markdown chunks to `$SPINDLE_HOME/corpus/<source>/<session>/<NNNN>.md`. Transcripts are private and never live in the repo.
+`spin ingest` writes plain Markdown chunks to `$SPINDLE_HOME/corpus/<source>/<session>/<NNNN>.md`. Transcripts are private and never live in the repo.
 
 ```
 ---
@@ -30,7 +30,7 @@ end: 2026-09-15T22:40:05Z
 ```
 
 - **Item ID:** `<source>:<session-id prefix>#L<line>`, where `line` is the 1-based line number in the source JSONL. Source files are append-only, so IDs stay stable when the file is re-ingested.
-- **Evidence expansion:** `spindle read codex:01a07de8#L315` resolves an item ID to the cited transcript entry. The session prefix must identify one ingested session.
+- **Evidence expansion:** `spin read codex:01a07de8#L315` resolves an item ID to the cited transcript entry. The session prefix must identify one ingested session.
 - **Kept:** human messages; assistant messages; tool calls, cut to one line; tool outputs, cut to 300 characters.
 - **Dropped:** injected harness context (AGENTS.md, environment, skills, permissions, subagent notifications), reasoning, and token or status events.
 - **Chunks** hold about 40k characters of consecutive items. A chunk's `end` time decides when its contents become available to the eval, so cutoff filtering happens per chunk.

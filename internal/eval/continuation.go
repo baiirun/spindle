@@ -37,6 +37,9 @@ type ContinuationResult struct {
 	Error           string         `json:"error,omitempty"`
 }
 
+// CLIName is the installed command name of the spindle CLI.
+const CLIName = "spin"
+
 // RunContinuation starts a fresh agent with a known prior-session handle. The
 // agent must use Spindle's read-only commands; the harness only supplies the
 // handle and records the resulting trace.
@@ -78,17 +81,17 @@ func RunContinuation(ctx context.Context, o ContinuationOptions) (ContinuationRe
 		return r, err
 	}
 	if !r.UsedResume {
-		return r, fmt.Errorf("continuation agent did not successfully invoke spindle resume")
+		return r, fmt.Errorf("continuation agent did not successfully invoke %s resume", CLIName)
 	}
 	return r, nil
 }
 
 func buildContinuationCommand(ctx context.Context, workDir, runDir string) (string, error) {
-	path, err := filepath.Abs(filepath.Join(runDir, "spindle"))
+	path, err := filepath.Abs(filepath.Join(runDir, CLIName))
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", path, "./cmd/spindle")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", path, "./cmd/"+CLIName)
 	cmd.Dir = workDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build continuation command: %w: %s", err, strings.TrimSpace(string(output)))
@@ -154,15 +157,15 @@ func resumeCall(input []byte) *commandEvent {
 
 func resumeInvocation(command string) bool {
 	for rest := command; ; {
-		i := strings.Index(rest, "spindle")
+		i := strings.Index(rest, CLIName)
 		if i < 0 {
 			return false
 		}
-		after := strings.TrimLeft(rest[i+len("spindle"):], "'\"")
+		after := strings.TrimLeft(rest[i+len(CLIName):], "'\"")
 		if strings.HasPrefix(after, " resume") {
 			return true
 		}
-		rest = rest[i+len("spindle"):]
+		rest = rest[i+len(CLIName):]
 	}
 }
 

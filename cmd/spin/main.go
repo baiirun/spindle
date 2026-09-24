@@ -1,4 +1,5 @@
-// Command spindle turns agent transcripts into evaluable memory.
+// Command spin is the spindle CLI: it turns agent transcripts into durable,
+// searchable context for continuing work.
 package main
 
 import (
@@ -11,7 +12,7 @@ import (
 	"spindle/internal/corpus"
 )
 
-const usage = `usage: spindle <command> [flags]
+const usage = `usage: spin <command> [flags]
 
 commands:
   ingest   normalize Codex and Claude transcripts into Markdown chunks
@@ -30,7 +31,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err := loadRoots(); err != nil {
-		fmt.Fprintln(os.Stderr, "spindle:", err)
+		fmt.Fprintln(os.Stderr, "spin:", err)
 		os.Exit(1)
 	}
 	var err error
@@ -56,7 +57,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "spindle:", err)
+		fmt.Fprintln(os.Stderr, "spin:", err)
 		os.Exit(1)
 	}
 }
