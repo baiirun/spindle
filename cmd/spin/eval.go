@@ -19,6 +19,10 @@ func runEval(args []string) error {
 		return errors.New("eval: want mine | label | run | report | continue")
 	}
 	switch args[0] {
+	case "trials-mine":
+		return evalTrialsMine(args[1:])
+	case "trials-label":
+		return evalTrialsLabel(args[1:])
 	case "mine":
 		return evalMine(args[1:])
 	case "label":
@@ -114,4 +118,50 @@ func evalLabel(args []string) error {
 	}
 	fmt.Printf("labeled %d of %d candidates with %s (cost $%.2f): %v → %s\n", len(items), len(cands), llm.Labeler, cost, byConf, *out)
 	return eval.WriteItems(*out, items)
+}
+
+func evalTrialsMine(args []string) error {
+	fs := flag.NewFlagSet("eval trials-mine", flag.ExitOnError)
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	out := fs.String("out", "data/eval/resume-candidates.jsonl", "classified resume candidates")
+	workers := fs.Int("workers", 6, "parallel calls")
+	fs.Parse(args)
+	cands, err := eval.MineResumeCandidates(*corpusRoot)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("prefilter: %d candidate messages\n", len(cands))
+	kept, err := eval.ClassifyResumeCandidates(context.Background(), cands, *workers)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning:", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
+		return err
+	}
+	fmt.Printf("classified as resumption: %d → %s\n", len(kept), *out)
+	return eval.WriteResumeCandidates(*out, kept)
+}
+
+func evalTrialsLabel(args []string) error {
+	fs := flag.NewFlagSet("eval trials-label", flag.ExitOnError)
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	in := fs.String("in", "data/eval/resume-candidates.jsonl", "classified resume candidates")
+	out := fs.String("out", "data/eval/continuation-v0.jsonl", "labeled trial set")
+	cacheDir := fs.String("cache", "data/eval/trial-cache", "per-candidate labeler verdicts")
+	workers := fs.Int("workers", 6, "parallel calls")
+	fs.Parse(args)
+	cands, err := eval.ReadResumeCandidates(*in)
+	if err != nil {
+		return err
+	}
+	trials, err := eval.LabelTrials(context.Background(), *corpusRoot, *cacheDir, cands, *workers)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning:", err)
+	}
+	byConf := map[string]int{}
+	for _, t := range trials {
+		byConf[t.Mode+"/"+t.Confidence]++
+	}
+	fmt.Printf("labeled %d of %d candidates: %v → %s\n", len(trials), len(cands), byConf, *out)
+	return eval.WriteTrials(*out, trials)
 }

@@ -37,6 +37,7 @@ type Request struct {
 	Schema   string   // optional JSON schema for structured output
 	Deny     []string // permission deny rules, e.g. "Read(//Users/**)"
 	Timeout  time.Duration
+	Effort   string // reasoning effort; empty means ReasoningEffort
 }
 
 // Result is the parsed outcome plus the trace needed for behavioral scoring.
@@ -84,6 +85,10 @@ func Run(ctx context.Context, r Request) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
+	effort := r.Effort
+	if effort == "" {
+		effort = ReasoningEffort
+	}
 	workdir := r.Dir
 	if workdir == "" {
 		workdir = os.TempDir()
@@ -91,7 +96,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 	args := []string{
 		"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check",
 		"-C", workdir, "--sandbox", "read-only", "--json",
-		"--model", r.Model, "-c", fmt.Sprintf(`model_reasoning_effort=%q`, ReasoningEffort),
+		"--model", r.Model, "-c", fmt.Sprintf(`model_reasoning_effort=%q`, effort),
 	}
 	if r.Schema != "" {
 		strict, err := strictSchema(r.Schema)
@@ -224,7 +229,14 @@ func isLimitMessage(text string) bool {
 // JSON runs a tool-less request that must return an object matching schema,
 // and decodes it into out.
 func JSON(ctx context.Context, model, system, prompt, schema string, out any) (Result, error) {
-	res, err := Run(ctx, Request{Model: model, System: system, Prompt: prompt, Schema: schema})
+	return JSONRequest(ctx, Request{Model: model, System: system, Prompt: prompt, Schema: schema}, out)
+}
+
+// JSONRequest is JSON with full request control, e.g. a higher reasoning
+// effort for labeling gold data.
+func JSONRequest(ctx context.Context, req Request, out any) (Result, error) {
+	prompt := req.Prompt
+	res, err := Run(ctx, req)
 	debugDump(prompt, res, err)
 	if err != nil {
 		return res, err
