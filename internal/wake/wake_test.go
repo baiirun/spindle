@@ -137,3 +137,24 @@ func TestResumeReturnsSourceOnlyWhenNoSummaryExists(t *testing.T) {
 		t.Fatalf("resume = %#v", result)
 	}
 }
+
+func TestResumeFallsBackToUnprojectedCorpusSession(t *testing.T) {
+	root := t.TempDir()
+	corpusRoot := filepath.Join(root, "corpus")
+	for _, index := range []int{1, 2} {
+		chunk := corpus.Chunk{Source: "codex", Session: "session", Index: index, Items: []corpus.Item{{ID: "codex:session#L1", Line: 1, Role: corpus.RoleUser, Text: "Raw context."}}}
+		if _, err := chunk.Write(corpusRoot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := Resume(Options{CorpusRoot: corpusRoot, EpisodeRoot: filepath.Join(root, "episodes")}, "codex", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Latest != nil || len(result.SourceOnly) != 2 {
+		t.Fatalf("resume = %#v", result)
+	}
+	if result.SourceOnly[0].Ref != "transcript:codex/session/0001" || result.SourceOnly[1].Ref != "transcript:codex/session/0002" {
+		t.Fatalf("source-only = %#v", result.SourceOnly)
+	}
+}

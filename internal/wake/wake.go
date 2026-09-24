@@ -146,7 +146,9 @@ func Wake(o Options) ([]Result, error) {
 
 // Resume returns the latest usable episode for a known session, its immediate
 // carried context, and any newer source-only ranges that must be expanded from
-// raw transcript. It is the warm-start counterpart to query-based Wake.
+// raw transcript. When the session has not been projected yet, it returns all
+// of its raw chunks as explicit source-only ranges. It is the warm-start
+// counterpart to query-based Wake.
 func Resume(o Options, source, session string) (ResumeResult, error) {
 	if o.EpisodeRoot == "" {
 		return ResumeResult{}, fmt.Errorf("episode retrieval is not configured")
@@ -159,7 +161,7 @@ func Resume(o Options, source, session string) (ResumeResult, error) {
 		return ResumeResult{}, err
 	}
 	if len(episodes) == 0 {
-		return ResumeResult{}, fmt.Errorf("session %s:%s has no episodes", source, session)
+		return unprojectedSession(o.CorpusRoot, source, session)
 	}
 	result := ResumeResult{}
 	for i := len(episodes) - 1; i >= 0; i-- {
@@ -180,6 +182,29 @@ func Resume(o Options, source, session string) (ResumeResult, error) {
 	}
 	for left, right := 0, len(result.SourceOnly)-1; left < right; left, right = left+1, right-1 {
 		result.SourceOnly[left], result.SourceOnly[right] = result.SourceOnly[right], result.SourceOnly[left]
+	}
+	return result, nil
+}
+
+func unprojectedSession(corpusRoot, source, session string) (ResumeResult, error) {
+	if corpusRoot == "" {
+		return ResumeResult{}, fmt.Errorf("session %s:%s has no episodes and transcript retrieval is not configured", source, session)
+	}
+	chunks, err := corpus.ReadSession(corpusRoot, source, session)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+	if len(chunks) == 0 {
+		return ResumeResult{}, fmt.Errorf("session %s:%s was not found in episodes or corpus", source, session)
+	}
+	result := ResumeResult{SourceOnly: make([]Result, 0, len(chunks))}
+	for _, chunk := range chunks {
+		result.SourceOnly = append(result.SourceOnly, Result{
+			Ref:     fmt.Sprintf("transcript:%s/%s/%04d", source, session, chunk.Index),
+			Kind:    "transcript",
+			Title:   fmt.Sprintf("Unprojected raw range %d of %d", chunk.Index, len(chunks)),
+			Excerpt: "No episode was recorded; expand this raw range before relying on the handoff.",
+		})
 	}
 	return result, nil
 }

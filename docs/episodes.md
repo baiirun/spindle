@@ -57,8 +57,10 @@ artifact, task, or source reference into the first episode of a new session.
 
 `resume` is the normal warm start. It returns the latest usable episode for a
 known source session, its carried links, and any newer `source-only` ranges
-that should be read directly. `wake` is for cold-start discovery when the
-harness has no prior-session handle.
+that should be read directly. If the session has not been slept yet but exists
+in the corpus, it returns its raw chunks as explicit unprojected source-only
+ranges. `wake` is for cold-start discovery when the harness has no
+prior-session handle.
 
 ## Implementation model
 

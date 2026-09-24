@@ -44,7 +44,8 @@ requirement for work to be recorded.
   external caller decides when a session is idle or complete.
 - `resume`: warm-start a replacement agent from the latest usable episode of a
   known source session. It exposes trailing source-only ranges instead of
-  presenting a failed compaction as a handoff.
+  presenting a failed compaction as a handoff; an unprojected corpus session
+  falls back to its raw chunks.
 - `wake`: return compact matching episodes and source passages for a scope and
   query when there is no known prior-session handle.
 - `search`, `read`, `related`: let an agent expand beyond an episode without

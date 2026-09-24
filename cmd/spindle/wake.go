@@ -29,6 +29,7 @@ func runWake(args []string) error {
 
 func runResume(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	corpus := fs.String("corpus", "data/corpus", "corpus root")
 	episodes := fs.String("episodes", defaultEpisodes, "episode root")
 	source := fs.String("source", "", "source name, e.g. codex")
 	session := fs.String("session", "", "source session ID")
@@ -37,7 +38,7 @@ func runResume(args []string) error {
 	if *source == "" || *session == "" {
 		return fmt.Errorf("resume requires --source and --session")
 	}
-	result, err := wake.Resume(wake.Options{EpisodeRoot: *episodes}, *source, *session)
+	result, err := wake.Resume(wake.Options{CorpusRoot: *corpus, EpisodeRoot: *episodes}, *source, *session)
 	if err != nil {
 		return err
 	}
