@@ -143,6 +143,12 @@ to an AI agent. You see: candidate prior sessions (same working directory, befor
 before the message, the message, and what happened after (the agent's catch-up and the user's corrections).
 
 Decide what a fresh agent, starting cold at that moment, would need to recover to continue correctly.
+
+The cutoff is strict. The checklist and pitfalls may only contain things that already existed BEFORE the
+message: established in the prior sessions or earlier in this session. The "after" section is evidence
+for verifying what was true at the moment (what the real agent recovered, what the user confirmed or
+corrected about the prior state). Anything newly decided, researched, built, or changed after the message
+is off-limits: a fresh agent at the cutoff could not know it.
 - keep=false if this isn't really a resumption, or you can't tell what the right continuation needed.
 - prior: the handles (exactly as given, "source:session") whose history holds the needed context. Use the
   current session's own handle when the context is earlier in the same session. Empty if unknown.
@@ -152,7 +158,8 @@ Decide what a fresh agent, starting cold at that moment, would need to recover t
 - checklist: 3-6 short, checkable things a good continuation must know or do: the goal, current state,
   key decisions and constraints, what's done, what's next. Ground each in the "after" evidence (what the
   agent recovered and the user accepted, or what the user corrected).
-- pitfalls: mistakes the real agent made that the user corrected, if any.
+- pitfalls: mistakes the real agent made about the PRIOR state that the user corrected, if any. Not
+  disagreements about new work done after the message.
 - confidence: high only if the checklist is clearly established by the evidence.`
 
 const trialLabelSchema = `{"type":"object","properties":{"keep":{"type":"boolean"},"mode":{"type":"string","enum":["resume","wake"]},"prior":{"type":"array","items":{"type":"string"}},"task":{"type":"string"},"checklist":{"type":"array","items":{"type":"string"}},"pitfalls":{"type":"array","items":{"type":"string"}},"confidence":{"type":"string","enum":["high","medium","low"]},"notes":{"type":"string"}},"required":["keep","mode","prior","task","checklist","pitfalls","confidence","notes"]}`

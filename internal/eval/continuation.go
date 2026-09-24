@@ -180,3 +180,9 @@ func writeContinuation(path string, result ContinuationResult) error {
 	}
 	return os.WriteFile(path, b, 0o644)
 }
+
+// BuildCLI builds the spin binary from repo into dir and returns its path, so
+// trials run the code under test rather than whatever is installed.
+func BuildCLI(ctx context.Context, repo, dir string) (string, error) {
+	return buildContinuationCommand(ctx, repo, dir)
+}
