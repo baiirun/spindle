@@ -2,6 +2,55 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-25 — three arms on the verified set v4r: raw vs episodes vs native Codex
+
+**Trial set v4r.**
+- **Mining:** `trials-mine --wide` flagged 584 of ~9,000 user messages, by cue, as the first message of a session within a week of earlier work in the same directory, or as the first message after a 3-hour pause.
+- **Classify and label:** 151 were classified as real pickups. The labeler was fixed to see ~30k characters before each pickup and at most 12 items / 45 minutes after it; 149 were labeled.
+- **Split and verify:** 1,357 claims came out of the split, and 68 trials kept at least 3 claims with code-checked pre-cutoff citations.
+- **Deduplicate:** keeping one trial per session per hour left **61 trials and 332 claims (286 must-know)**. The identifier leak check flags 4 of 332 claims, down from 24 of 192 in v2.
+
+**Arms.** Same task prompt, reader (gpt-6-luna, low effort), judge and claims in every arm; one sample each.
+- **raw:** spin over transcripts before the cutoff.
+- **episodes:** raw plus episodes projected before the cutoff.
+- **native:** `codex exec resume` on a copy of the real Codex thread, cut at the trial's moment and held in a private CODEX_HOME. This is "just keep going in the same thread", including Codex's encrypted compaction summaries. It covers the 56 trials with a Codex prior.
+
+After rerunning 9 trials whose calls died while the Mac slept, the runs have 0 errors and 0 leak suspects.
+
+| Arm (56 Codex-prior trials) | Coverage | Must-know coverage | Trials w/ contradiction | spin calls | Input tokens | Time |
+|---|---|---|---|---|---|---|
+| raw | 0.80 | 0.82 | 11% | 8.8 | 189k | 51 s |
+| episodes | 0.80 | 0.81 | 9% | 5.1 | 165k | 52 s |
+| native | **0.84** | **0.84** | **5%** | 0 | **104k** | **24 s** |
+
+**Paired, per trial (single samples; per-trial noise is about ±0.18, and the standard error of a 56-trial mean difference is about 0.027):**
+
+| Comparison | Mean Δ | Up / flat / down |
+|---|---|---|
+| episodes − raw | −0.01 | 20 / 19 / 22 |
+| native − raw | +0.04 | 20 / 23 / 13 |
+| native − episodes | +0.04 | 23 / 20 / 13 |
+
+**Slice that matters.**
+
+| Slice | Trials | raw | episodes | native |
+|---|---|---|---|---|
+| Within-session pickups | 51 | 0.82 | 0.81 | 0.86 |
+| New-session pickups | 5 | 0.65 | 0.65 | 0.62 |
+
+In new-session pickups, native resumes the *previous* thread.
+
+**Reading.**
+- **All three arms recover about 80% of verified must-know claims.** Native is slightly ahead (+0.04, about 1.5 SE, so not established) and contradicts itself least.
+- **Native is clearly the cheapest:** about half the input tokens and half the time of the spin arms. Just continuing the thread is hard to beat on cost.
+- **Episodes still don't raise coverage over raw.** They cut lookups by 42% and tokens by 12%.
+- **The set is dominated by within-session pickups (51 of 56),** where the live thread has an obvious advantage. Spindle's reason to exist is the other case: new sessions, lost sessions, other harnesses. Only 5 trials test it, and there all arms drop to about 0.63.
+
+**Next.**
+1. Mine new-session and cross-harness pickups specifically. The labeler mostly picked the current session as the prior; the target is 30 or more trials where the context lives in a *different* session.
+2. Repeat samples on the new-session slice before claiming anything there.
+3. Only then hill-climb episodes (`ts-1b9c30`), measured on that slice against native.
+
 ## 2026-09-25 — noise, answer-key audit, and rescore (`ts-7c6631`)
 
 **What changed since the baseline.**
