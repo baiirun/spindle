@@ -188,12 +188,12 @@ func evalTrials(args []string) error {
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	in := fs.String("in", "data/eval/continuation-v0.jsonl", "trial set")
-	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes")
+	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread)")
 	only := fs.String("only", "", "comma-separated trial IDs (default: all)")
 	workers := fs.Int("workers", 3, "parallel trials")
 	tag := fs.String("tag", "", "label for this run")
 	fs.Parse(args)
-	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes {
+	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative {
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
 	trials, err := eval.ReadTrials(*in)
@@ -212,6 +212,16 @@ func evalTrials(args []string) error {
 			}
 		}
 		trials = kept
+	}
+	if *arm == eval.ArmNative {
+		var codex []eval.Trial
+		for _, t := range trials {
+			if eval.NativePrior(t) != "" {
+				codex = append(codex, t)
+			}
+		}
+		fmt.Printf("native arm: %d of %d trials have a Codex prior to resume\n", len(codex), len(trials))
+		trials = codex
 	}
 	name := time.Now().Format("20060102-150405") + "-trials-" + *arm
 	if *tag != "" {

@@ -287,3 +287,49 @@ func debugDump(prompt string, res Result, err error) {
 	out := fmt.Sprintf("err: %v\n\ntext:\n%s\n\nstructured:\n%s\n", err, res.Text, res.Structured)
 	_ = os.WriteFile(name+".output.txt", []byte(out), 0o644)
 }
+
+// ResumeRequest continues an existing Codex thread kept in a private CODEX_HOME.
+type ResumeRequest struct {
+	Home      string // CODEX_HOME holding the thread's rollout and auth
+	SessionID string
+	Prompt    string
+	Model     string
+	Effort    string
+	Dir       string // working directory; an empty one keeps the agent off real files
+	Timeout   time.Duration
+}
+
+// Resume sends one more user turn to an existing thread. The thread's own
+// history, including its encrypted compaction summaries, is the only context.
+func Resume(ctx context.Context, r ResumeRequest) (Result, error) {
+	if r.Timeout == 0 {
+		r.Timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	effort := r.Effort
+	if effort == "" {
+		effort = ReasoningEffort
+	}
+	args := []string{
+		"exec", "--ignore-user-config", "--skip-git-repo-check",
+		"-C", r.Dir, "--sandbox", "read-only", "--json",
+		"--model", r.Model, "-c", fmt.Sprintf(`model_reasoning_effort=%q`, effort),
+		"resume", r.SessionID, "-",
+	}
+	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+r.Home)
+	cmd.Stdin = strings.NewReader(r.Prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	started := time.Now()
+	runErr := cmd.Run()
+	res, parseErr := parseCodexOutput(stdout.Bytes(), time.Since(started))
+	if parseErr != nil {
+		return res, parseErr
+	}
+	if runErr != nil {
+		return res, fmt.Errorf("codex exec resume failed: %w: %s", runErr, truncate(stderr.String(), 500))
+	}
+	return res, nil
+}

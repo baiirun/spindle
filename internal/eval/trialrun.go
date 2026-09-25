@@ -20,6 +20,7 @@ import (
 const (
 	ArmRaw      = "raw"
 	ArmEpisodes = "episodes"
+	ArmNative   = "native" // resume the real Codex thread, cut at the trial's moment
 )
 
 // TrialRunOptions configures one scored pass over a trial set.
@@ -101,41 +102,11 @@ func RunTrials(ctx context.Context, o TrialRunOptions) ([]TrialResult, error) {
 
 func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, error) {
 	r := TrialResult{Trial: t.ID, Arm: o.Arm, Mode: t.Mode}
-	home := filepath.Join(o.ScratchDir, t.ID)
-	defer os.RemoveAll(home)
-	episodeRoot := o.EpisodeRoot
-	if o.Arm == ArmRaw {
-		episodeRoot = ""
-	}
-	if _, err := snapshot.Build(snapshot.Options{CorpusRoot: o.CorpusRoot, EpisodeRoot: episodeRoot, Out: home, Version: o.Version, Before: t.AskedAt}); err != nil {
-		return r, err
-	}
-	work := filepath.Join(home, "work") // empty working directory: nothing to read but spin
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		return r, err
-	}
-	corpusRoot := filepath.Join(home, "corpus")
-	episodes := filepath.Join(home, "episodes", o.Version)
-
-	started := time.Now()
-	res, err := llm.Run(ctx, llm.Request{
-		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
-		System: trialSystem(t, o.Binary, corpusRoot, episodes),
-		Prompt: fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task),
-	})
-	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
-	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
-	r.UsedResume = usedResume(res.ToolCalls)
-	for _, c := range res.ToolCalls {
-		var ev commandEvent
-		if json.Unmarshal(c.Input, &ev) != nil || ev.Item.Command == "" {
-			continue
-		}
-		if strings.Contains(ev.Item.Command, o.Binary) {
-			r.SpinCalls++
-		} else {
-			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
-		}
+	var err error
+	if o.Arm == ArmNative {
+		err = nativeBrief(ctx, o, t, &r)
+	} else {
+		err = spinBrief(ctx, o, t, &r)
 	}
 	if err != nil {
 		return r, err
@@ -251,4 +222,45 @@ func SummarizeTrials(arm string, rs []TrialResult) TrialSummary {
 		s.DurationS /= n
 	}
 	return s
+}
+
+// spinBrief has a fresh agent write the brief using only spin over a cutoff snapshot.
+func spinBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) error {
+	home := filepath.Join(o.ScratchDir, t.ID)
+	defer os.RemoveAll(home)
+	episodeRoot := o.EpisodeRoot
+	if o.Arm == ArmRaw {
+		episodeRoot = ""
+	}
+	if _, err := snapshot.Build(snapshot.Options{CorpusRoot: o.CorpusRoot, EpisodeRoot: episodeRoot, Out: home, Version: o.Version, Before: t.AskedAt}); err != nil {
+		return err
+	}
+	work := filepath.Join(home, "work") // empty working directory: nothing to read but spin
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return err
+	}
+	corpusRoot := filepath.Join(home, "corpus")
+	episodes := filepath.Join(home, "episodes", o.Version)
+
+	started := time.Now()
+	res, err := llm.Run(ctx, llm.Request{
+		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
+		System: trialSystem(t, o.Binary, corpusRoot, episodes),
+		Prompt: fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task),
+	})
+	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
+	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
+	r.UsedResume = usedResume(res.ToolCalls)
+	for _, c := range res.ToolCalls {
+		var ev commandEvent
+		if json.Unmarshal(c.Input, &ev) != nil || ev.Item.Command == "" {
+			continue
+		}
+		if strings.Contains(ev.Item.Command, o.Binary) {
+			r.SpinCalls++
+		} else {
+			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
+		}
+	}
+	return err
 }
