@@ -180,7 +180,7 @@ func parseCodexOutput(raw []byte, elapsed time.Duration) (Result, error) {
 		}
 		return res, fmt.Errorf("codex exec produced no agent message: %s", truncate(message, 500))
 	}
-	if isLimitMessage(res.Text) {
+	if isLimitNotice(res.Text) {
 		return res, fmt.Errorf("%w: %s", ErrUsageLimit, truncate(res.Text, 200))
 	}
 	return res, nil
@@ -219,11 +219,16 @@ func strictObjects(value any) {
 // rather than burn through the remaining work with failing calls.
 var ErrUsageLimit = errors.New("usage limit reached")
 
-// isLimitMessage matches the CLI's limit notice, which arrives as a normal
-// result text rather than an error.
+// isLimitMessage matches a limit error from the CLI's error events.
 func isLimitMessage(text string) bool {
+	return isLimitNotice(text) || strings.Contains(strings.ToLower(text), "usage limit")
+}
+
+// isLimitNotice matches the CLI's limit notice when it arrives as the result
+// text. Only the notice's opening counts: a real answer may discuss usage limits.
+func isLimitNotice(text string) bool {
 	t := strings.TrimSpace(text)
-	return strings.HasPrefix(t, "You've hit your") || strings.HasPrefix(t, "You’ve hit your") || strings.Contains(strings.ToLower(t), "usage limit")
+	return strings.HasPrefix(t, "You've hit your") || strings.HasPrefix(t, "You’ve hit your")
 }
 
 // JSON runs a tool-less request that must return an object matching schema,

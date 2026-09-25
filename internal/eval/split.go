@@ -78,15 +78,16 @@ func splitChecklist(ctx context.Context, t Trial) (Trial, error) {
 	}
 	facts := make([][]string, len(t.Checklist))
 	for _, it := range res.Items {
-		if it.N < 1 || it.N > len(t.Checklist) {
-			return t, fmt.Errorf("item number %d out of range", it.N)
+		if it.N >= 1 && it.N <= len(t.Checklist) {
+			facts[it.N-1] = append(facts[it.N-1], it.Facts...)
 		}
-		facts[it.N-1] = append(facts[it.N-1], it.Facts...)
 	}
+	orig := t.Checklist
 	t.Checklist, t.ChecklistFrom = nil, nil
 	for i, fs := range facts {
 		if len(fs) == 0 {
-			return t, fmt.Errorf("item %d came back with no facts", i+1)
+			// The model sometimes drops an item; keeping it unsplit loses nothing.
+			fs = []string{orig[i]}
 		}
 		for _, f := range fs {
 			t.Checklist = append(t.Checklist, strings.TrimSpace(f))

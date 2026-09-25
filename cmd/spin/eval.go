@@ -133,13 +133,22 @@ func evalTrialsMine(args []string) error {
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	out := fs.String("out", "data/eval/resume-candidates.jsonl", "classified resume candidates")
 	workers := fs.Int("workers", 6, "parallel calls")
+	wide := fs.Bool("wide", false, "also flag new sessions after recent work in the same directory, and pickups after long pauses")
 	fs.Parse(args)
-	cands, err := eval.MineResumeCandidates(*corpusRoot)
+	mine, system := eval.MineResumeCandidates, eval.ResumeClassifySystem
+	if *wide {
+		mine, system = eval.MineWideCandidates, eval.ResumeClassifyWideSystem
+	}
+	cands, err := mine(*corpusRoot)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("prefilter: %d candidate messages\n", len(cands))
-	kept, err := eval.ClassifyResumeCandidates(context.Background(), cands, *workers)
+	why := map[string]int{}
+	for _, c := range cands {
+		why[c.Why]++
+	}
+	fmt.Printf("prefilter: %d candidate messages %v\n", len(cands), why)
+	kept, err := eval.ClassifyResumeCandidates(context.Background(), system, cands, *workers)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning:", err)
 	}

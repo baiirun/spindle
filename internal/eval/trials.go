@@ -52,7 +52,8 @@ type ResumeCandidate struct {
 	Cwd     string    `json:"cwd"`
 	AskedAt time.Time `json:"asked_at"`
 	Text    string    `json:"text"`
-	First   bool      `json:"first"` // first user message of its session
+	First   bool      `json:"first"`         // first user message of its session
+	Why     string    `json:"why,omitempty"` // wide mining: cue | new_session | after_gap
 }
 
 // MineResumeCandidates prefilters user messages that may resume earlier work.
@@ -85,7 +86,7 @@ func MineResumeCandidates(corpusRoot string) ([]ResumeCandidate, error) {
 	return out, nil
 }
 
-const resumeClassifySystem = `You classify messages a user sent to an AI coding/design agent.
+const ResumeClassifySystem = `You classify messages a user sent to an AI coding/design agent.
 Keep a message only if the user is RESUMING or HANDING OFF earlier work whose context lives in an earlier
 session or earlier in a long session: e.g. "continue from where you left off", "where were we", "look at
 the other session and take over", "the app lost the session", "what was the original task before X".
@@ -95,7 +96,7 @@ or questions about external things.`
 const resumeClassifySchema = `{"type":"object","properties":{"results":{"type":"array","items":{"type":"object","properties":{"n":{"type":"integer"},"keep":{"type":"boolean"},"reason":{"type":"string"}},"required":["n","keep","reason"]}}},"required":["results"]}`
 
 // ClassifyResumeCandidates keeps messages that resume or hand off earlier work.
-func ClassifyResumeCandidates(ctx context.Context, cands []ResumeCandidate, workers int) ([]ResumeCandidate, error) {
+func ClassifyResumeCandidates(ctx context.Context, system string, cands []ResumeCandidate, workers int) ([]ResumeCandidate, error) {
 	const batch = 25
 	var (
 		mu   sync.Mutex
@@ -113,7 +114,11 @@ func ClassifyResumeCandidates(ctx context.Context, cands []ResumeCandidate, work
 			defer func() { <-sem }()
 			var b strings.Builder
 			for i := start; i < end; i++ {
-				fmt.Fprintf(&b, "<message n=%d first_in_session=%t>\n%s\n</message>\n", i-start, cands[i].First, strings.TrimSpace(cands[i].Text))
+				why := ""
+				if cands[i].Why != "" {
+					why = fmt.Sprintf(" why=%q", cands[i].Why)
+				}
+				fmt.Fprintf(&b, "<message n=%d first_in_session=%t%s>\n%s\n</message>\n", i-start, cands[i].First, why, strings.TrimSpace(cands[i].Text))
 			}
 			var out struct {
 				Results []struct {
@@ -121,7 +126,7 @@ func ClassifyResumeCandidates(ctx context.Context, cands []ResumeCandidate, work
 					Keep bool `json:"keep"`
 				} `json:"results"`
 			}
-			_, err := llm.JSON(ctx, llm.Classifier, resumeClassifySystem, b.String(), resumeClassifySchema, &out)
+			_, err := llm.JSON(ctx, llm.Classifier, system, b.String(), resumeClassifySchema, &out)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -268,6 +273,14 @@ func onlyKnown(handles, shortlist []string) []string {
 
 // trialPrompt shows the labeler the message in context plus a shortlist of
 // earlier sessions from the same working directory.
+// Labeling windows around the pickup message: enough before to see the state
+// at that moment, and only the real agent's catch-up after it.
+const (
+	labelBeforeBudget = 30000 // characters of the current session before the message
+	labelAfterItems   = 12
+	labelAfterSpan    = 45 * time.Minute
+)
+
 func trialPrompt(corpusRoot string, idx *chunkIndex, c ResumeCandidate) (string, []string, error) {
 	type sessionInfo struct {
 		handle       string
@@ -351,12 +364,22 @@ func trialPrompt(corpusRoot string, idx *chunkIndex, c ResumeCandidate) (string,
 	if at < 0 {
 		return "", nil, fmt.Errorf("%s not found", c.ItemID)
 	}
+	// The labeler must see the state at the moment, not just its last few turns: v1
+	// showed 6 items before and 30 after, and its checklists drifted to later events.
+	start, used := at, 0
+	for start > 0 && used < labelBeforeBudget {
+		start--
+		used += len(clip(all[start].Text, 1200)) + 40
+	}
 	b.WriteString("<before>\n")
-	for _, it := range all[max(0, at-6):at] {
+	for _, it := range all[start:at] {
 		fmt.Fprintf(&b, "[%s %s] %s\n", it.Time.Format("2006-01-02 15:04"), it.Role, clip(it.Text, 1200))
 	}
 	fmt.Fprintf(&b, "</before>\n<message session=%q asked_at=%q>\n%s\n</message>\n<after>\n", current, all[at].Time.Format("2006-01-02 15:04"), all[at].Text)
-	for _, it := range all[at+1 : min(len(all), at+31)] {
+	for _, it := range all[at+1 : min(len(all), at+1+labelAfterItems)] {
+		if it.Time.Sub(all[at].Time) > labelAfterSpan {
+			break
+		}
 		fmt.Fprintf(&b, "[%s %s] %s\n", it.Time.Format("2006-01-02 15:04"), it.Role, clip(it.Text, 2500))
 	}
 	b.WriteString("</after>\n")

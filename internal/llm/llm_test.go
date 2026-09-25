@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,19 @@ func TestParseCodexOutputClassifiesUsageLimit(t *testing.T) {
 	_, err := parseCodexOutput(raw, 0)
 	if !errors.Is(err, ErrUsageLimit) {
 		t.Fatalf("error = %v, want usage limit", err)
+	}
+}
+
+func TestParseCodexOutputKeepsAnswersThatMentionUsageLimits(t *testing.T) {
+	raw := []byte(`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\"checklist\":[\"Labeling stopped on the usage limit.\"]}"}}
+`)
+
+	res, err := parseCodexOutput(raw, 0)
+	if err != nil {
+		t.Fatalf("error = %v, want the answer", err)
+	}
+	if !strings.Contains(res.Text, "usage limit") {
+		t.Fatalf("text = %q", res.Text)
 	}
 }
 
