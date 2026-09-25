@@ -2,7 +2,52 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-25 — noise, answer-key audit, and rescore (`ts-7c6631`)
+
+**What changed since the baseline.**
+- **Trial prompt.** The agent's only job is now to write the handoff brief it would need. Before, it was asked to "continue" while being forbidden to edit, and about 40% of briefs stopped to say they couldn't. That's now 6 of 57 raw briefs and 3 of 19 episode briefs.
+- **v2 answer key.** `spin eval trials-split` splits compound checklist items into single claims: 91 items became 192 claims. Lists that belong to one claim stay together.
+- **Label audit.** I hand-checked 4 trials against the transcript. **30 of their 45 claims were not true yet at the cutoff.** The labeler had seen 6 items before the pickup and 30 after it, so it often described a later moment of the same long session. t-013 and t-020 were wholly invalid, and t-019 was mostly invalid.
+- **v3 answer key.** `spin eval trials-verify` re-grounds every claim in the transcript before the cutoff. The model must cite an item ID, and code keeps a claim only if that item predates the cutoff (see `verify_test.go`). Result: 124 of 192 claims were unsupported and 39 only restated the task. 29 claims were kept and 15 grounded ones added. **9 of 19 trials keep at least 3 claims.** On the 4 audited trials, it agrees with the hand audit.
+
+**Runs.** The v2 key was scored with raw ×3 samples and episodes ×1 (`runs/*-trials-{raw,episodes}-v2-s*`): 76 trial runs, 0 errors, 0 leak suspects. The v3 numbers rescore those same runs, using the v2 grades of the 26 v3 claims that carried over from v2. The 15 added claims have no grades yet.
+
+**Noise, measured on raw.**
+
+| Key | Trials | Mean of 3 raw runs | Spread of run means (sd) | Per-trial sd (median) | Mean \|Δ\| between two runs of the same trial |
+|---|---|---|---|---|---|
+| v2 (all claims) | 19 | 0.53 | 0.013 | 0.12 | 0.18 |
+| v3 (verified claims) | 9 | 0.76 | 0.082 | 0.14 | 0.21 |
+
+A single trial run swings about ±0.18, so per-trial comparisons from one sample are meaningless. On the full 19-trial v2 set, the average is stable (run means 0.52–0.54). On the 9-trial v3 set, with 3–4 claims per trial, it isn't (0.69–0.85).
+
+**Raw vs episodes.**
+
+| Key | Slice | Raw (mean of 3) | Episodes (1 run) | Δ |
+|---|---|---|---|---|
+| v2 | all 19 | 0.53 | 0.52 | −0.01 |
+| v2 | 14 with prior episodes | 0.56 | 0.60 | +0.04 (6 up, 3 flat, 5 down) |
+| v3 | 8 with prior episodes | 0.81 | 0.82 | +0.01 |
+
+| Per run | Raw | Episodes |
+|---|---|---|
+| spin calls | 11.9 | 5.5 |
+| Input tokens | 208k | 177k |
+| Time | 46 s | 45 s |
+
+**Reading.**
+- **Most of the "agents recover only half" gap was the answer key.** On verified claims, both arms recover about 80%.
+- **Episodes still show no coverage gain.** They do reach the same recovery with **54% fewer lookups and 15% fewer input tokens**.
+- **The clean set is too small to separate arms.** Its run means spread 0.08, and most trials would need many samples. The v2 set is stable but still includes ungrounded claims.
+
+**Next.**
+1. Widen trial mining. The original prefilter found only 26 candidates. Loosen it and label with the bounded after-window, then verify. Target: 40 or more trials with at least 3 grounded claims.
+2. Score v3 (and its successor) directly, so the added claims get graded.
+3. Add the Codex native arm: resume the real thread at the cutoff.
+
 ## 2026-09-24 — continuation baseline: raw vs episodes (`ts-7c6631`)
+
+*Superseded in part: this baseline used the v1 answer key, which the 09-25 audit found largely ungrounded, and the old "continue the task" prompt.*
 
 **Setup.** Trial set v1 (`data/eval/continuation-v1.jsonl`, 19 resume trials). Each trial gets a leak-free cutoff snapshot. A fresh gpt-6-luna agent (low effort) may use only `spin` to write a continuation brief. A gpt-6-luna judge (medium effort) grades the brief against the trial's checklist (covered = 1, partial = 0.5) and its pitfalls. One sample per trial per arm, 3 workers.
 

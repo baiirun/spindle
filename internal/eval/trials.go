@@ -21,20 +21,25 @@ import (
 // handed off earlier work. A fresh agent gets Task and (for resume trials) the
 // Prior handles, sees only data before AskedAt, and is graded on Checklist.
 type Trial struct {
-	ID         string    `json:"id"`
-	Mode       string    `json:"mode"` // resume: prior handle known | wake: must discover context
-	Source     string    `json:"source"`
-	Session    string    `json:"session"`
-	ItemID     string    `json:"item_id"`
-	AskedAt    time.Time `json:"asked_at"`
-	Cwd        string    `json:"cwd"`
-	Message    string    `json:"message"`   // the user's words
-	Task       string    `json:"task"`      // standalone instruction for a fresh agent
-	Prior      []string  `json:"prior"`     // source:session handles holding the context
-	Checklist  []string  `json:"checklist"` // what a good continuation must recover
-	Pitfalls   []string  `json:"pitfalls"`  // mistakes the real agent made and the user corrected
-	Confidence string    `json:"confidence"`
-	Notes      string    `json:"notes,omitempty"`
+	ID        string    `json:"id"`
+	Mode      string    `json:"mode"` // resume: prior handle known | wake: must discover context
+	Source    string    `json:"source"`
+	Session   string    `json:"session"`
+	ItemID    string    `json:"item_id"`
+	AskedAt   time.Time `json:"asked_at"`
+	Cwd       string    `json:"cwd"`
+	Message   string    `json:"message"`   // the user's words
+	Task      string    `json:"task"`      // standalone instruction for a fresh agent
+	Prior     []string  `json:"prior"`     // source:session handles holding the context
+	Checklist []string  `json:"checklist"` // what a good continuation must recover
+	// ChecklistFrom maps each item to its 1-based source item when a checklist was split.
+	ChecklistFrom []int `json:"checklist_from,omitempty"`
+	// ChecklistImportance (must | nice) and ChecklistCites (pre-cutoff item IDs) are set by verification.
+	ChecklistImportance []string   `json:"checklist_importance,omitempty"`
+	ChecklistCites      [][]string `json:"checklist_cites,omitempty"`
+	Pitfalls            []string   `json:"pitfalls"` // mistakes the real agent made and the user corrected
+	Confidence          string     `json:"confidence"`
+	Notes               string     `json:"notes,omitempty"`
 }
 
 var resumeCue = regexp.MustCompile(`(?i)\b(continue|continuing|pick(ing)? (it |this |back )?up|where (were|are) we|left off|take over|took over|other (agent|session|thread|claude|codex)|lost (the|my|this) session|catch up|resume|previous (session|thread|conversation|agent)|last (session|time)|yesterday|original task|back to|transcript|stopped partway|where it (is|was)|where things (are|stand))\b`)

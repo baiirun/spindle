@@ -121,7 +121,7 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 	res, err := llm.Run(ctx, llm.Request{
 		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
 		System: trialSystem(t, o.Binary, corpusRoot, episodes),
-		Prompt: fmt.Sprintf("It is %s.\n\n%s", t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task),
+		Prompt: fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task),
 	})
 	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
 	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
@@ -182,7 +182,9 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 	} else {
 		start = fmt.Sprintf("The harness doesn't know which earlier session this continues. Find the context with:\n\n  %s wake %s --query \"...\"", q(bin), roots)
 	}
-	return fmt.Sprintf(`You are a fresh agent taking over an existing effort. You have no remembered context.
+	return fmt.Sprintf(`You are a fresh agent taking over an existing effort. You have no remembered context. Your only job
+here is to write the handoff brief you would need to continue the work; you will not do the work itself,
+so don't stop to say you can't edit or implement anything.
 
 %s
 
@@ -193,7 +195,7 @@ Other tools, all read-only:
 
 Use only this command. Do not read other files or directories, and do not edit anything.
 
-Before doing the task, write a continuation brief with these headings: Goal, Current state,
+Write the brief with these headings: Goal, Current state,
 Decisions and constraints, Done, Next concrete action, Open questions. Be specific and cite transcript
 item IDs where you can.`, start, q(bin), roots, q(bin), roots, q(bin), q(episodes))
 }
