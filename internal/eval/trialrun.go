@@ -156,7 +156,14 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 		}
 		start = "The harness knows which earlier session(s) this work continues. Start by running:\n\n" + strings.Join(cmds, "\n")
 	} else {
-		start = fmt.Sprintf("This is a brand-new session, started in %s. Nobody has told you which earlier session(s) this\ncontinues; find them yourself. Start with:\n\n  %s wake %s --query \"...\"", t.Cwd, q(bin), roots)
+		// Discovery agents found the right session two-thirds of the time but then read
+		// whichever episode matched their keywords, usually not the latest state.
+		start = fmt.Sprintf("This is a brand-new session, started in %s. Nobody has told you which earlier session(s) this\n"+
+			"continues; find them yourself. Start with:\n\n  %s wake %s --query \"...\"\n\n"+
+			"Once you know which session this continues, get its latest state before anything else:\n\n"+
+			"  %s resume %s --source SOURCE --session SESSION_ID\n\n"+
+			"It returns the session's most recent episode and any transcript after it; read that tail too.\n"+
+			"Episodes matched by search may be older than the current state.", t.Cwd, q(bin), roots, q(bin), roots)
 	}
 	return fmt.Sprintf(`You are a fresh agent taking over an existing effort. You have no remembered context. Your only job
 here is to write the handoff brief you would need to continue the work; you will not do the work itself,
