@@ -2,6 +2,45 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-26 — cold floor, known handle, and discovery from a vague opener
+
+**Setup.** The same 61 verified v4r trials and claims, one sample per arm, 0 errors.
+- **Known handle:** the agent is given the prior session (the existing raw, episodes and native runs) plus the labeler's task text.
+- **Discovery:** the trial replays a brand-new session. `trials-openers` rewrites the pickup into a vague, topic-only opener ("where were we on the eldspire rules?"); the openers are in `data/eval/openers-v4w.json`. No handle is given, so the agent must find the earlier session with `spin wake`/`search`. `found_prior` records whether any spin call referenced a prior session.
+- **Cold:** the same request with no history and no tools, the floor.
+
+| Framing | Arm | Coverage | Trials w/ contradiction | spin calls | Input tokens | Time |
+|---|---|---|---|---|---|---|
+| Known-handle request | cold | 0.37 | 2% | 0 | 18k | 8 s |
+| Known handle | raw | 0.79 | 11% | 8.8 | 187k | 50 s |
+| Known handle | episodes | 0.79 | 10% | 5.1 | 165k | 51 s |
+| Known handle | native (56 Codex trials, reference) | 0.84 | 5% | 0 | 104k | 24 s |
+| Vague opener | cold | 0.05 | 8% | 0 | 18k | 7 s |
+| Vague opener | raw (discovery) | 0.41 | 11% | 6.8 | 219k | 49 s |
+| Vague opener | episodes (discovery) | 0.36 | 18% | 5.8 | 172k | 43 s |
+
+**Finding the session is the bottleneck.**
+
+| Discovery arm | Found the prior session | Coverage when found | Coverage when missed |
+|---|---|---|---|
+| raw | 40/61 (66%) | 0.55 | 0.15 |
+| episodes | 42/61 (69%) | 0.46 | 0.14 |
+
+Paired per trial:
+- episodes − raw in discovery: −0.05 (17 up / 20 flat / 24 down).
+- Discovery vs known handle: −0.38 for raw, −0.42 for episodes.
+
+**Reading.**
+- **The known-handle task text leaks.** A cold agent with no history scores 0.37 from the labeler's task wording alone. What memory adds on top of that is about +0.42, not 0.79. Future known-handle trials should use the real message or a vague opener.
+- **Discovery works about two-thirds of the time.** When the agent finds the right session it recovers about half the checklist; when it doesn't, it's near the floor. That one step decides most of the score.
+- **Episodes don't help discovery yet.** They find the session about as often, but coverage once found is lower (0.46 vs 0.55) and contradictions are higher (18% vs 11%). The agent seems to stop at the episode summary instead of reading the source.
+- **Even when found, discovery trails a known handle** (0.55 vs 0.79). A vague opener doesn't tell the agent which part of a long session matters.
+
+**Next, in the order the failures point to.**
+1. **Discovery retrieval.** The agent knows its working directory, but `wake`/`search` can't filter by it, and ranking is lexical over whole chunks. Add a `--cwd`/project filter and recency, and return item-level hits. Measure `found_prior` and coverage on the discovery set.
+2. **Episodes that lead to the source.** When found, episodes should point the agent at the relevant raw ranges, so their lower coverage and higher contradiction rate go away.
+3. **Clean the known-handle framing.** Rerun known handle with the vague opener plus the handle, so it has the same 0.05 floor.
+
 ## 2026-09-25 — three arms on the verified set v4r: raw vs episodes vs native Codex
 
 **Trial set v4r.**
