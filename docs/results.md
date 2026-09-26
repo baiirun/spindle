@@ -2,6 +2,31 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-26 — fix 1: discovery agents resume the session they find (`ts-1b9c30`)
+
+**Change** (prompt only, `471fb35`). The discovery prompt now says: once you know which session this continues, run `spin resume` on it to get the latest episode and the transcript after it. Episodes matched by search may be older than the current state.
+
+**Runs.** The same 61 vague-opener trials (`v4w`), raw and episodes arms, one sample each, 0 errors; compared against the 09-26 discovery runs.
+
+| Arm | Coverage | Found session | Coverage when found | Resumed the right session | Read the latest episode (when found) | Tokens |
+|---|---|---|---|---|---|---|
+| raw, before | 0.41 | 66% | 0.55 | — | — | 219k |
+| raw, fix 1 | 0.44 | 61% | 0.66 | 36/61 | — | 183k |
+| episodes, before | 0.36 | 69% | 0.46 | — | 21/40 | 172k |
+| episodes, fix 1 | **0.47** | 62% | **0.66** | 37/61 | **37/38** | **140k** |
+
+Paired per trial:
+- episodes, fix 1 − before: **+0.11** (32 up / 13 flat / 16 down), roughly 4 standard errors.
+- raw, fix 1 − before: +0.03 (noise).
+- In discovery with fix 1, episodes − raw is +0.04, where it was −0.05 before.
+
+**Reading.**
+- **Reading the latest state was the episodes arm's navigation problem, and one prompt line fixed it.** Once found, coverage rose from 0.46 to 0.66 with 19% fewer tokens.
+- **Finding the session is now the whole bottleneck.** Every agent ran `resume`, but only 36–37 of 61 picked the right session. When it misses, coverage is about 0.1–0.16, near the 0.05 floor.
+- Episodes now slightly lead raw in discovery at lower cost, but that's within noise.
+
+**Next.** Discovery retrieval: a working-directory/project filter on `wake`/`search`, recency, and a per-project session index (Codex's "What's in Memory" pattern). Measure the found rate first.
+
 ## 2026-09-26 — cold floor, known handle, and discovery from a vague opener
 
 **Setup.** The same 61 verified v4r trials and claims, one sample per arm, 0 errors.
