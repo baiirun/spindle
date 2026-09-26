@@ -52,8 +52,9 @@ type ResumeCandidate struct {
 	Cwd     string    `json:"cwd"`
 	AskedAt time.Time `json:"asked_at"`
 	Text    string    `json:"text"`
-	First   bool      `json:"first"`         // first user message of its session
-	Why     string    `json:"why,omitempty"` // wide mining: cue | new_session | after_gap
+	First   bool      `json:"first"`             // first user message of its session
+	Why     string    `json:"why,omitempty"`     // wide mining: cue | new_session | after_gap
+	Context string    `json:"context,omitempty"` // new-session mining: the earlier sessions, for the classifier
 }
 
 // MineResumeCandidates prefilters user messages that may resume earlier work.
@@ -117,6 +118,9 @@ func ClassifyResumeCandidates(ctx context.Context, system string, cands []Resume
 				why := ""
 				if cands[i].Why != "" {
 					why = fmt.Sprintf(" why=%q", cands[i].Why)
+				}
+				if cands[i].Context != "" {
+					fmt.Fprintf(&b, "<earlier_sessions n=%d>\n%s</earlier_sessions>\n", i-start, cands[i].Context)
 				}
 				fmt.Fprintf(&b, "<message n=%d first_in_session=%t%s>\n%s\n</message>\n", i-start, cands[i].First, why, strings.TrimSpace(cands[i].Text))
 			}
@@ -236,6 +240,15 @@ func LabelTrials(ctx context.Context, corpusRoot, cacheDir string, cands []Resum
 			}
 			if !out.Keep || len(out.Checklist) == 0 {
 				return
+			}
+			if c.Why == "new_session" {
+				// A brand-new session: the context must come from an earlier one, and
+				// the harness can't name it, so the agent has to find it.
+				out.Prior = without(out.Prior, c.Source+":"+c.Session)
+				if len(out.Prior) == 0 {
+					return
+				}
+				out.Mode = "wake"
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -394,4 +407,14 @@ func WriteResumeCandidates(path string, c []ResumeCandidate) error {
 }
 func ReadResumeCandidates(path string) ([]ResumeCandidate, error) {
 	return readJSONL[ResumeCandidate](path)
+}
+
+func without(list []string, drop string) []string {
+	var out []string
+	for _, x := range list {
+		if x != drop {
+			out = append(out, x)
+		}
+	}
+	return out
 }

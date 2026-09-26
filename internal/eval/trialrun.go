@@ -21,6 +21,7 @@ const (
 	ArmRaw      = "raw"
 	ArmEpisodes = "episodes"
 	ArmNative   = "native" // resume the real Codex thread, cut at the trial's moment
+	ArmCold     = "cold"   // no history at all: the floor any memory has to beat
 )
 
 // TrialRunOptions configures one scored pass over a trial set.
@@ -47,6 +48,7 @@ type TrialResult struct {
 	SpinCalls    int            `json:"spin_calls"`
 	OtherCalls   []string       `json:"other_calls,omitempty"` // non-spin commands: possible leakage, audited by hand
 	UsedResume   bool           `json:"used_resume"`
+	FoundPrior   bool           `json:"found_prior"` // a spin command referenced a prior session (discovery trials)
 	InputTokens  int64          `json:"input_tokens"`
 	OutputTokens int64          `json:"output_tokens"`
 	DurationMS   int64          `json:"duration_ms"`
@@ -103,9 +105,12 @@ func RunTrials(ctx context.Context, o TrialRunOptions) ([]TrialResult, error) {
 func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, error) {
 	r := TrialResult{Trial: t.ID, Arm: o.Arm, Mode: t.Mode}
 	var err error
-	if o.Arm == ArmNative {
+	switch o.Arm {
+	case ArmNative:
 		err = nativeBrief(ctx, o, t, &r)
-	} else {
+	case ArmCold:
+		err = coldBrief(ctx, o, t, &r)
+	default:
 		err = spinBrief(ctx, o, t, &r)
 	}
 	if err != nil {
@@ -151,7 +156,7 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 		}
 		start = "The harness knows which earlier session(s) this work continues. Start by running:\n\n" + strings.Join(cmds, "\n")
 	} else {
-		start = fmt.Sprintf("The harness doesn't know which earlier session this continues. Find the context with:\n\n  %s wake %s --query \"...\"", q(bin), roots)
+		start = fmt.Sprintf("This is a brand-new session, started in %s. Nobody has told you which earlier session(s) this\ncontinues; find them yourself. Start with:\n\n  %s wake %s --query \"...\"", t.Cwd, q(bin), roots)
 	}
 	return fmt.Sprintf(`You are a fresh agent taking over an existing effort. You have no remembered context. Your only job
 here is to write the handoff brief you would need to continue the work; you will not do the work itself,
@@ -246,7 +251,7 @@ func spinBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	res, err := llm.Run(ctx, llm.Request{
 		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
 		System: trialSystem(t, o.Binary, corpusRoot, episodes),
-		Prompt: fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task),
+		Prompt: trialUserTurn(t),
 	})
 	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
 	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
@@ -258,9 +263,59 @@ func spinBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 		}
 		if strings.Contains(ev.Item.Command, o.Binary) {
 			r.SpinCalls++
+			r.FoundPrior = r.FoundPrior || mentionsPrior(t, ev.Item.Command)
 		} else {
 			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
 		}
 	}
 	return err
+}
+
+// coldBrief has a fresh agent write the brief from the request alone, with no
+// history and nothing to read: what a new session knows without memory.
+func coldBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) error {
+	work := filepath.Join(o.ScratchDir, t.ID, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(filepath.Join(o.ScratchDir, t.ID))
+	started := time.Now()
+	res, err := llm.Run(ctx, llm.Request{
+		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
+		System: `You are a fresh agent taking over an existing effort. You have no remembered context and no access
+to earlier sessions, files, or tools. Your only job is to write the handoff brief you would need to continue
+the work. Say plainly what you can't know. Use these headings: Goal, Current state, Decisions and constraints,
+Done, Next concrete action, Open questions.`,
+		Prompt: trialUserTurn(t),
+	})
+	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
+	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
+	for _, c := range res.ToolCalls {
+		var ev commandEvent
+		if json.Unmarshal(c.Input, &ev) == nil && ev.Item.Command != "" {
+			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
+		}
+	}
+	return err
+}
+
+// mentionsPrior reports whether text names one of the trial's prior sessions
+// by the 8-character prefix that transcript and episode references carry.
+func mentionsPrior(t Trial, text string) bool {
+	for _, h := range t.Prior {
+		if _, session, ok := strings.Cut(h, ":"); ok && len(session) >= 8 && strings.Contains(text, session[:8]) {
+			return true
+		}
+	}
+	return false
+}
+
+// trialUserTurn is the user turn every arm gets. A wake trial replays a brand-new
+// session, so the task is the user's opening message rather than a description.
+func trialUserTurn(t Trial) string {
+	when := t.AskedAt.Format("2006-01-02 15:04 MST")
+	if t.Mode == "wake" {
+		return fmt.Sprintf("It is %s. The user opens a new session with:\n\n%s\n\nBefore doing anything, write the handoff brief you'd need to continue this work.", when, t.Task)
+	}
+	return fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", when, t.Task)
 }

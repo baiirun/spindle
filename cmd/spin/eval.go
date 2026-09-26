@@ -18,13 +18,15 @@ import (
 
 func runEval(args []string) error {
 	if len(args) < 1 {
-		return errors.New("eval: want mine | label | run | report | continue | trials | trials-mine | trials-label | trials-split | trials-verify")
+		return errors.New("eval: want mine | label | run | report | continue | trials | trials-mine | trials-label | trials-split | trials-verify | trials-openers")
 	}
 	switch args[0] {
 	case "trials":
 		return evalTrials(args[1:])
 	case "trials-mine":
 		return evalTrialsMine(args[1:])
+	case "trials-openers":
+		return evalTrialsOpeners(args[1:])
 	case "trials-verify":
 		return evalTrialsVerify(args[1:])
 	case "trials-split":
@@ -134,9 +136,13 @@ func evalTrialsMine(args []string) error {
 	out := fs.String("out", "data/eval/resume-candidates.jsonl", "classified resume candidates")
 	workers := fs.Int("workers", 6, "parallel calls")
 	wide := fs.Bool("wide", false, "also flag new sessions after recent work in the same directory, and pickups after long pauses")
+	newSessions := fs.Bool("new-sessions", false, "only the opening request of sessions that follow earlier sessions in the same directory")
 	fs.Parse(args)
 	mine, system := eval.MineResumeCandidates, eval.ResumeClassifySystem
-	if *wide {
+	switch {
+	case *newSessions:
+		mine, system = eval.MineNewSessionCandidates, eval.NewSessionClassifySystem
+	case *wide:
 		mine, system = eval.MineWideCandidates, eval.ResumeClassifyWideSystem
 	}
 	cands, err := mine(*corpusRoot)
@@ -188,12 +194,12 @@ func evalTrials(args []string) error {
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	in := fs.String("in", "data/eval/continuation-v0.jsonl", "trial set")
-	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread)")
+	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread) | cold (no history)")
 	only := fs.String("only", "", "comma-separated trial IDs (default: all)")
 	workers := fs.Int("workers", 3, "parallel trials")
 	tag := fs.String("tag", "", "label for this run")
 	fs.Parse(args)
-	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative {
+	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative && *arm != eval.ArmCold {
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
 	trials, err := eval.ReadTrials(*in)
@@ -303,4 +309,36 @@ func evalTrialsVerify(args []string) error {
 	fmt.Printf("verified %d trials → kept %d: %d claims in, %d kept, %d unsupported, %d task restatements, %d unresolved citations, %d added → %s\n",
 		len(trials), len(kept), in0, k, u, tk, bc, add, *out)
 	return eval.WriteTrials(*out, kept)
+}
+
+func evalTrialsOpeners(args []string) error {
+	fs := flag.NewFlagSet("eval trials-openers", flag.ExitOnError)
+	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
+	in := fs.String("in", "data/eval/continuation-v4r.jsonl", "trial set to replay as brand-new sessions")
+	out := fs.String("out", "data/eval/continuation-v4w.jsonl", "wake-mode trials with opening requests")
+	review := fs.String("review", "data/eval/openers-v4w.json", "original vs opener, for review")
+	workers := fs.Int("workers", 4, "parallel calls")
+	fs.Parse(args)
+	trials, err := eval.ReadTrials(*in)
+	if err != nil {
+		return err
+	}
+	nt, revs, err := eval.AsNewSessions(context.Background(), *corpusRoot, trials, *workers)
+	if err != nil {
+		return err
+	}
+	kinds := map[string]int{}
+	leaks := 0
+	for _, r := range revs {
+		kinds[r.Verdict]++
+		if len(r.Leaks) > 0 {
+			leaks++
+		}
+	}
+	b, _ := json.MarshalIndent(revs, "", "  ")
+	if err := os.WriteFile(*review, b, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("replayed %d trials as new sessions: %v, %d openers name checklist identifiers → %s, review %s\n", len(nt), kinds, leaks, *out, *review)
+	return eval.WriteTrials(*out, nt)
 }
