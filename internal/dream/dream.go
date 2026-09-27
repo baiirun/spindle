@@ -27,6 +27,7 @@ var Formats = map[string]Format{
 	// current rules, caps threads and size (enforced by code), and leaves
 	// history to an index code builds from episode titles.
 	"v2": {Version: "project-memory-v2", System: systemV2, MaxChars: 12000, CodeHistory: true},
+	"v3": {Version: "project-memory-v3", System: systemV3, CodeHistory: true, Ops: true},
 }
 
 // Format is one memory contract.
@@ -35,6 +36,7 @@ type Format struct {
 	System      string
 	MaxChars    int  // 0: no enforced cap
 	CodeHistory bool // write a per-step history index built from episode titles
+	Ops         bool // the model emits edit operations that code applies (see ops.go)
 }
 
 const systemV1 = `You maintain the memory of one long-running project by folding new episodes into it. An episode
@@ -161,6 +163,7 @@ func Fold(ctx context.Context, o Options) ([]Step, error) {
 		steps  []Step
 		memory string
 		folded []episode.Episode
+		state  = newState()
 		known  = map[string]bool{}
 	)
 	for _, batch := range batches(eps, o.Batch, o.Cuts) {
@@ -177,23 +180,16 @@ func Fold(ctx context.Context, o Options) ([]Step, error) {
 			}
 		}
 		b.WriteString("</new_episodes>")
-		req := llm.Request{Model: o.Model, System: o.Format.System, Prompt: b.String(), Timeout: 15 * time.Minute}
-		res, err := llm.Run(ctx, req)
+		last := batch[len(batch)-1]
+		var err error
+		if o.Format.Ops {
+			memory, err = opsStep(ctx, o, state, b.String(), len(steps)+1, last)
+		} else {
+			memory, err = rewriteStep(ctx, o, b.String())
+		}
 		if err != nil {
 			return steps, fmt.Errorf("dream step %d: %w", len(steps)+1, err)
 		}
-		memory = strings.TrimSpace(res.Text)
-		if o.Format.MaxChars > 0 && len(memory) > o.Format.MaxChars {
-			// The model ignores size limits as the project grows; ask once to compress.
-			req.Prompt = fmt.Sprintf("<memory_over_limit chars=%d limit=%d>\n%s\n</memory_over_limit>\n"+
-				"Rewrite this memory in the same format under %d characters: merge or drop dormant threads, trim "+
-				"Recently changed, and shorten wording, but keep every current rule exact.", len(memory), o.Format.MaxChars, memory, o.Format.MaxChars)
-			if res, err = llm.Run(ctx, req); err != nil {
-				return steps, fmt.Errorf("dream step %d compress: %w", len(steps)+1, err)
-			}
-			memory = strings.TrimSpace(res.Text)
-		}
-		last := batch[len(batch)-1]
 		s := Step{N: len(steps) + 1, Through: fmt.Sprintf("%s:%s/%04d", last.Source, last.Session, last.Chunk), AsOf: last.End,
 			Chars: len(memory), BadCites: badCites(memory, known)}
 		s.Path = filepath.Join(o.Out, "steps", fmt.Sprintf("%03d.md", s.N))
@@ -211,6 +207,41 @@ func Fold(ctx context.Context, o Options) ([]Step, error) {
 		steps = append(steps, s)
 	}
 	return steps, os.WriteFile(filepath.Join(o.Out, "memory.md"), []byte(memory+"\n"), 0o644)
+}
+
+// rewriteStep asks the model for the whole next memory (formats v1, v2).
+func rewriteStep(ctx context.Context, o Options, prompt string) (string, error) {
+	req := llm.Request{Model: o.Model, System: o.Format.System, Prompt: prompt, Timeout: 15 * time.Minute}
+	res, err := llm.Run(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	memory := strings.TrimSpace(res.Text)
+	if o.Format.MaxChars > 0 && len(memory) > o.Format.MaxChars {
+		// The model ignores size limits as the project grows; ask once to compress.
+		req.Prompt = fmt.Sprintf("<memory_over_limit chars=%d limit=%d>\n%s\n</memory_over_limit>\n"+
+			"Rewrite this memory in the same format under %d characters: merge or drop dormant threads, trim "+
+			"Recently changed, and shorten wording, but keep every current rule exact.", len(memory), o.Format.MaxChars, memory, o.Format.MaxChars)
+		if res, err = llm.Run(ctx, req); err != nil {
+			return "", fmt.Errorf("compress: %w", err)
+		}
+		memory = strings.TrimSpace(res.Text)
+	}
+	return memory, nil
+}
+
+// opsStep asks the model for edit operations and applies them to the state (format v3).
+func opsStep(ctx context.Context, o Options, state *State, prompt string, step int, last episode.Episode) (string, error) {
+	var out struct {
+		Ops []Op `json:"ops"`
+	}
+	req := llm.Request{Model: o.Model, System: o.Format.System, Prompt: prompt, Schema: opsSchema, Timeout: 15 * time.Minute}
+	if _, err := llm.JSONRequest(ctx, req, &out); err != nil {
+		return "", err
+	}
+	state.Apply(out.Ops, step, last.End.UTC().Format("2006-01-02"))
+	state.AsOf, state.Through = last.End, fmt.Sprintf("episode %04d", last.Chunk)
+	return state.Render(o.Project), nil
 }
 
 // historyIndex lists every folded episode, newest first, as a dated title and a

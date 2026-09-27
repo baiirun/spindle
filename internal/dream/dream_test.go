@@ -33,3 +33,24 @@ func TestBatchesNeverSpanACut(t *testing.T) {
 		t.Fatalf("AsOf picked step %d, want 2", s.N)
 	}
 }
+
+func TestApplyLogsEveryRuleChangeAndCapsThreads(t *testing.T) {
+	s := newState()
+	s.Apply([]Op{{Op: "set_rule", Key: "stress die", Text: "every 1 adds stress", Who: "user"}}, 1, "2026-07-07")
+	s.Apply([]Op{{Op: "set_rule", Key: "stress die", Text: "any 1 adds one stress", Who: "user", Why: "simpler"}}, 2, "2026-07-08")
+	s.Apply([]Op{{Op: "remove_rule", Key: "stress die", Reason: "replaced by push roll"}}, 3, "2026-07-09")
+	if len(s.Rules) != 0 || len(s.Changes) != 2 {
+		t.Fatalf("rules %d, changes %d; want 0 rules and 2 logged changes", len(s.Rules), len(s.Changes))
+	}
+	if s.Changes[0].Old != "every 1 adds stress" || s.Changes[1].New != "(removed)" {
+		t.Fatalf("changes not logged with old text: %+v", s.Changes)
+	}
+	var ops []Op
+	for i := 0; i < maxThreads+3; i++ {
+		ops = append(ops, Op{Op: "upsert_thread", Key: string(rune('a' + i)), Status: "active", Now: "x"})
+	}
+	s.Apply(ops, 4, "2026-07-10")
+	if len(s.Threads) != maxThreads {
+		t.Fatalf("threads %d, want cap %d", len(s.Threads), maxThreads)
+	}
+}
