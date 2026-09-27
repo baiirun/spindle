@@ -25,6 +25,11 @@ evidence: 9 continuation trials and 19 recall questions from the same session ("
 | episodes + memory v1 | 0.89 | 0.64 | 0.51 | 0.72 | 0.72 | 215k | 4 |
 | **episodes + memory v2** | 0.85 | **0.77** | 0.67 | **0.88** | **0.80** | 178k | **0** |
 
+**Default Codex baseline** (native arm: reopen the real Codex thread cut at each test's moment, with its own
+compaction): continuation 0.79, recall 0.78 (current 0.79, why 0.64), all 0.78, 66k tokens, 1 contradicted.
+Episodes + memory v2 ties it overall (+0.01; 9 up / 13 flat / 6 down): better on continuation and "why",
+worse on "current", at ~2.7× the tokens.
+
 Paired: episodes + memory v2 − episodes is **+0.08** (9 up / 13 flat / 6 down, about 2 SE at n = 28).
 v2 − v1 with an agent is +0.07; memory alone gains +0.09 from v1 to v2.
 
