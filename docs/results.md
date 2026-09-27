@@ -2,6 +2,37 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-27 — delayed and currency recall probes on the Eldspire TTRPG log
+
+**Setup.** A new set of 30 hand-vetted probes (`data/eval/eldspire-probes-v1.jsonl`, gitignored like the rest of
+`data/`) on the TTRPG log thread (`019e85fe`). A fresh coordinator starts at one of six late cutoffs (Aug 1 to Aug 7),
+and each probe asks about a fact from June or July in the user's terse style. One opener is the user's real message;
+the other 29 are vague openers with no topic-leaking rewrite. The gold is the original evidence (cited items, all
+before the cutoff) plus a check on whether the fact was later superseded. 19 probes list the stale answer as a
+pitfall. Types: changed 9, current 7, why 6, tried already 4, rejected 4. The median age of the first fact is 26.5
+days; the median age of the current answer is 10.5 days. Known session in every arm, one sample each, 0 errors. The
+memory arms use the existing v2 snapshots, the nearest 0–2.5 days before each cutoff.
+
+| Arm | All (30) | Changed | Current | Why | Tried | Rejected | Contradicted | Pitfalls repeated | Tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| raw | 0.25 | 0.08 | 0.43 | 0.25 | 0.23 | 0.36 | 13% | 8 | 173k |
+| episodes | 0.27 | 0.17 | 0.38 | 0.25 | 0.21 | 0.36 | 23% | 6 | 166k |
+| memory v2 alone | 0.57 | 0.61 | 0.69 | 0.33 | 0.67 | 0.50 | 10% | 2 | — |
+| episodes + memory v2 | 0.47 | 0.44 | 0.71 | 0.31 | 0.42 | 0.39 | 17% | 7 | 251k |
+| native (reopened Codex thread) | **0.65** | 0.51 | 0.67 | **0.86** | 0.62 | 0.66 | **3%** | 3 | 165k |
+
+By the age of the first fact (21 days or less, n=12, vs over 21 days, n=18): raw 0.30 vs 0.22, memory v2 alone 0.70 vs 0.48,
+episodes + memory v2 0.60 vs 0.38, native 0.71 vs 0.61.
+
+**Reading.**
+- **Search-based arms fail currency.** Raw and episodes find the older discussion first and report it as
+  current: OSC's post-roll push as Eldspire's push, Shadowdark damage dice, intermediate wound floors.
+- **The fold is what tracks currency.** Memory alone scores 0.61 on "changed" questions, while search scores 0.08–0.17.
+- **The agent overrides the fold.** Episodes + memory v2 is 0.10 below memory alone and repeats 7 stale
+  answers against 2, because older transcript evidence wins over the snapshot.
+- **The memory drops rationale.** On "why" questions, native scores 0.86 and every spindle arm scores 0.25–0.33.
+- One sample on 30 probes: gaps under about 0.1–0.15 are noise.
+
 ## 2026-09-27 — project memory on the Eldspire TTRPG log (`spin dream`)
 
 **Setup.** One real long-running project: the TTRPG log Codex thread (06-02 → 08-07, 134 chunks, all
