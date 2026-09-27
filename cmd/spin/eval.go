@@ -194,12 +194,16 @@ func evalTrials(args []string) error {
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	in := fs.String("in", "data/eval/continuation-v0.jsonl", "trial set")
-	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread) | cold (no history)")
+	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread) | cold (no history) | memory (project memory alone) | memory-agent")
 	only := fs.String("only", "", "comma-separated trial IDs (default: all)")
 	workers := fs.Int("workers", 3, "parallel trials")
 	tag := fs.String("tag", "", "label for this run")
+	memoryDir := fs.String("memory", "", "memory arms: dream output directory holding steps.json")
 	fs.Parse(args)
-	if *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative && *arm != eval.ArmCold {
+	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent) && *memoryDir == "" {
+		return fmt.Errorf("--arm %s needs --memory", *arm)
+	}
+	if *arm != eval.ArmMemory && *arm != eval.ArmMemoryAgent && *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative && *arm != eval.ArmCold {
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
 	trials, err := eval.ReadTrials(*in)
@@ -247,7 +251,7 @@ func evalTrials(args []string) error {
 	}
 	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
 		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
-		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir,
 	})
 	s := eval.SummarizeTrials(*arm, results)
 	b, _ := json.MarshalIndent(s, "", "  ")
@@ -287,13 +291,14 @@ func evalTrialsVerify(args []string) error {
 	in := fs.String("in", "data/eval/continuation-v2.jsonl", "trial set to verify")
 	out := fs.String("out", "data/eval/continuation-v3.jsonl", "trials whose claims are grounded before the cutoff")
 	report := fs.String("report", "data/eval/trial-verify-v3.json", "per-trial verification report")
+	minClaims := fs.Int("min", 3, "drop trials left with fewer grounded claims (continuation trials need several; a recall question may have one)")
 	workers := fs.Int("workers", 4, "parallel calls")
 	fs.Parse(args)
 	trials, err := eval.ReadTrials(*in)
 	if err != nil {
 		return err
 	}
-	kept, reps, err := eval.VerifyTrials(context.Background(), *corpusRoot, trials, *workers)
+	kept, reps, err := eval.VerifyTrials(context.Background(), *corpusRoot, trials, *workers, *minClaims)
 	if err != nil {
 		return err
 	}

@@ -34,6 +34,7 @@ type TrialRunOptions struct {
 	Trials      []Trial
 	RunDir      string
 	ScratchDir  string // snapshots live here; removed per trial
+	MemoryDir   string // memory arms: a dream output directory with steps.json
 	Workers     int
 }
 
@@ -48,7 +49,8 @@ type TrialResult struct {
 	SpinCalls    int            `json:"spin_calls"`
 	OtherCalls   []string       `json:"other_calls,omitempty"` // non-spin commands: possible leakage, audited by hand
 	UsedResume   bool           `json:"used_resume"`
-	FoundPrior   bool           `json:"found_prior"` // a spin command referenced a prior session (discovery trials)
+	MemoryAsOf   string         `json:"memory_as_of,omitempty"` // memory arms: which snapshot was used
+	FoundPrior   bool           `json:"found_prior"`            // a spin command referenced a prior session (discovery trials)
 	InputTokens  int64          `json:"input_tokens"`
 	OutputTokens int64          `json:"output_tokens"`
 	DurationMS   int64          `json:"duration_ms"`
@@ -110,6 +112,10 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 		err = nativeBrief(ctx, o, t, &r)
 	case ArmCold:
 		err = coldBrief(ctx, o, t, &r)
+	case ArmMemory:
+		err = memoryBrief(o, t, &r)
+	case ArmMemoryAgent:
+		err = memoryAgentBrief(ctx, o, t, &r)
 	default:
 		err = spinBrief(ctx, o, t, &r)
 	}
@@ -130,7 +136,7 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 		return r, fmt.Errorf("judge: %w", err)
 	}
 	score := 0.0
-	for _, g := range r.Grade.Checklist {
+	for _, g := range r.Grade.Checklist[:min(len(r.Grade.Checklist), len(t.Checklist))] {
 		switch g {
 		case "covered":
 			score++
@@ -148,7 +154,7 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 	q := shellQuote
 	roots := fmt.Sprintf("--corpus %s --episodes %s", q(corpusRoot), q(episodes))
 	var start string
-	if t.Mode == "resume" && len(t.Prior) > 0 {
+	if (t.Mode == "resume" || t.Mode == "recall") && len(t.Prior) > 0 {
 		var cmds []string
 		for _, h := range t.Prior {
 			source, session, _ := strings.Cut(h, ":")
@@ -166,7 +172,7 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 			"Episodes matched by search may be older than the current state.", t.Cwd, q(bin), roots, q(bin), roots)
 	}
 	return fmt.Sprintf(`You are a fresh agent taking over an existing effort. You have no remembered context. Your only job
-here is to write the handoff brief you would need to continue the work; you will not do the work itself,
+here is to %s; you will not do the work itself,
 so don't stop to say you can't edit or implement anything.
 
 %s
@@ -178,9 +184,7 @@ Other tools, all read-only:
 
 Use only this command. Do not read other files or directories, and do not edit anything.
 
-Write the brief with these headings: Goal, Current state,
-Decisions and constraints, Done, Next concrete action, Open questions. Be specific and cite transcript
-item IDs where you can.`, start, q(bin), roots, q(bin), roots, q(bin), q(episodes))
+%s`, trialJob(t), start, q(bin), roots, q(bin), roots, q(bin), q(episodes), finalInstruction(t))
 }
 
 // TrialSummary aggregates one arm.
@@ -238,6 +242,11 @@ func SummarizeTrials(arm string, rs []TrialResult) TrialSummary {
 
 // spinBrief has a fresh agent write the brief using only spin over a cutoff snapshot.
 func spinBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) error {
+	return spinBriefWith(ctx, o, t, r, "")
+}
+
+// spinBriefWith is spinBrief with extra context placed ahead of the tool instructions.
+func spinBriefWith(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult, preface string) error {
 	home := filepath.Join(o.ScratchDir, t.ID)
 	defer os.RemoveAll(home)
 	episodeRoot := o.EpisodeRoot
@@ -257,7 +266,7 @@ func spinBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	started := time.Now()
 	res, err := llm.Run(ctx, llm.Request{
 		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
-		System: trialSystem(t, o.Binary, corpusRoot, episodes),
+		System: withPreface(preface, trialSystem(t, o.Binary, corpusRoot, episodes)),
 		Prompt: trialUserTurn(t),
 	})
 	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
@@ -289,10 +298,8 @@ func coldBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	started := time.Now()
 	res, err := llm.Run(ctx, llm.Request{
 		Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute,
-		System: `You are a fresh agent taking over an existing effort. You have no remembered context and no access
-to earlier sessions, files, or tools. Your only job is to write the handoff brief you would need to continue
-the work. Say plainly what you can't know. Use these headings: Goal, Current state, Decisions and constraints,
-Done, Next concrete action, Open questions.`,
+		System: fmt.Sprintf("You are a fresh agent taking over an existing effort. You have no remembered context and no access\n"+
+			"to earlier sessions, files, or tools. Your only job is to %s. Say plainly what you can't know.\n%s", trialJob(t), finalInstruction(t)),
 		Prompt: trialUserTurn(t),
 	})
 	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
@@ -317,12 +324,39 @@ func mentionsPrior(t Trial, text string) bool {
 	return false
 }
 
+func trialJob(t Trial) string {
+	if t.Mode == "recall" {
+		return "answer the user's question about earlier work"
+	}
+	return "write the handoff brief you would need to continue the work"
+}
+
+// finalInstruction says what the agent must produce: a handoff brief, or for a
+// recall trial, a direct answer to the user's question.
+func finalInstruction(t Trial) string {
+	if t.Mode == "recall" {
+		return "Answer the user's question directly and specifically, as of the time given. Say who decided\n" +
+			"anything you report (the user, or the agent without the user's agreement), and cite transcript item IDs."
+	}
+	return "Write the brief with these headings: Goal, Current state,\nDecisions and constraints, Done, Next concrete action, Open questions. Be specific and cite transcript\nitem IDs where you can."
+}
+
 // trialUserTurn is the user turn every arm gets. A wake trial replays a brand-new
 // session, so the task is the user's opening message rather than a description.
 func trialUserTurn(t Trial) string {
 	when := t.AskedAt.Format("2006-01-02 15:04 MST")
+	if t.Mode == "recall" {
+		return fmt.Sprintf("It is %s. The user asks:\n\n%s", when, t.Task)
+	}
 	if t.Mode == "wake" {
 		return fmt.Sprintf("It is %s. The user opens a new session with:\n\n%s\n\nBefore doing anything, write the handoff brief you'd need to continue this work.", when, t.Task)
 	}
 	return fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", when, t.Task)
+}
+
+func withPreface(preface, system string) string {
+	if preface == "" {
+		return system
+	}
+	return system + "\n\n" + preface
 }

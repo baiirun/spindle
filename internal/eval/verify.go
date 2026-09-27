@@ -38,7 +38,6 @@ const (
 	verifyBeforeBudget = 90000 // characters of pre-cutoff transcript shown
 	verifyAfterItems   = 12
 	verifyAfterSpan    = 45 * time.Minute
-	minVerifiedClaims  = 3
 )
 
 // VerifyReport says what verification did to one trial.
@@ -49,13 +48,14 @@ type VerifyReport struct {
 	Task        int      `json:"task"`
 	BadCites    int      `json:"bad_cites"` // claimed supported, but no citation resolved before the cutoff
 	Added       int      `json:"added"`
-	Dropped     bool     `json:"dropped"` // fewer than minVerifiedClaims survived
+	Dropped     bool     `json:"dropped"` // fewer than the minimum claims survived
 	Reasons     []string `json:"reasons,omitempty"`
 }
 
 // VerifyTrials returns the trials whose checklists survive verification, plus a
-// report per input trial. Kept claims carry ChecklistImportance and ChecklistCites.
-func VerifyTrials(ctx context.Context, corpusRoot string, trials []Trial, workers int) ([]Trial, []VerifyReport, error) {
+// report per input trial. Trials left with fewer than minClaims claims are
+// dropped. Kept claims carry ChecklistImportance and ChecklistCites.
+func VerifyTrials(ctx context.Context, corpusRoot string, trials []Trial, workers, minClaims int) ([]Trial, []VerifyReport, error) {
 	out := make([]*Trial, len(trials))
 	reps := make([]VerifyReport, len(trials))
 	var (
@@ -70,7 +70,7 @@ func VerifyTrials(ctx context.Context, corpusRoot string, trials []Trial, worker
 		go func(i int, t Trial) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			vt, rep, err := verifyTrial(ctx, corpusRoot, t)
+			vt, rep, err := verifyTrial(ctx, corpusRoot, t, minClaims)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -96,7 +96,7 @@ func VerifyTrials(ctx context.Context, corpusRoot string, trials []Trial, worker
 	return kept, reps, nil
 }
 
-func verifyTrial(ctx context.Context, corpusRoot string, t Trial) (Trial, VerifyReport, error) {
+func verifyTrial(ctx context.Context, corpusRoot string, t Trial, minClaims int) (Trial, VerifyReport, error) {
 	rep := VerifyReport{Trial: t.ID}
 	handles := map[string]bool{t.Source + ":" + t.Session: true}
 	for _, h := range t.Prior {
@@ -218,7 +218,7 @@ func verifyTrial(ctx context.Context, corpusRoot string, t Trial) (Trial, Verify
 		v.ChecklistCites = append(v.ChecklistCites, cites)
 		rep.Added++
 	}
-	rep.Dropped = len(v.Checklist) < minVerifiedClaims
+	rep.Dropped = len(v.Checklist) < minClaims
 	return v, rep, nil
 }
 

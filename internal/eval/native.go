@@ -53,11 +53,8 @@ func nativeBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult
 		return err
 	}
 
-	prompt := fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\n"+
-		"Write the handoff brief you'd need to continue it, using only what is already in this conversation. "+
-		"Do not run commands or read files; you will not do the work itself.\n\n"+
-		"Use these headings: Goal, Current state, Decisions and constraints, Done, Next concrete action, Open questions.",
-		t.AskedAt.Format("2006-01-02 15:04 MST"), t.Task)
+	prompt := fmt.Sprintf("%s\n\nUse only what is already in this conversation. Do not run commands or read files; "+
+		"your only job is to %s, not to do the work itself.\n\n%s", trialUserTurn(t), trialJob(t), finalInstruction(t))
 	started := time.Now()
 	res, err := llm.Resume(ctx, llm.ResumeRequest{
 		Home: filepath.Join(home, "codex"), SessionID: session, Prompt: prompt,
