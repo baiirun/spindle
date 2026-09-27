@@ -2,6 +2,45 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-27 — project memory on the Eldspire TTRPG log (`spin dream`)
+
+**Setup.** One real long-running project: the TTRPG log Codex thread (06-02 → 08-07, 134 chunks, all
+slept). `spin dream` folds its episodes in time order, 10 per step, with a snapshot right before each test
+moment, so every test sees the memory as of its own time. 28 tests, all verified against pre-cutoff
+evidence: 9 continuation trials and 19 recall questions from the same session ("current", "why",
+"changed", "rejected"). Known session in every arm; one sample each; 0 errors.
+
+- **v1 format:** working state, history, superseded. It grew to 45k characters (peak 64k), mostly citations
+  (~500), 10–18 threads, and an ever-growing History.
+- **v2 format:** "Current rules and decisions" with exact values and who decided; at most 6 active threads;
+  last 10 changes; 12k cap with one compress retry; history moved to a code-built index of episode titles.
+  It still ended at 22k characters (peak 26k): the model doesn't hold the cap.
+
+| Arm | Continuation (9) | Recall (19) | Recall: current (11) | Recall: why (5) | All (28) | Tokens | Contradicted |
+|---|---|---|---|---|---|---|---|
+| memory v1 alone | 0.42 | 0.23 | 0.21 | 0.12 | 0.30 | — | 1 |
+| memory v2 alone | 0.44 | 0.35 | 0.42 | 0.23 | 0.38 | — | 3 |
+| raw | 0.86 | 0.60 | 0.50 | 0.77 | 0.68 | 226k | 2 |
+| episodes | 0.82 | 0.68 | 0.70 | 0.64 | 0.72 | 153k | 0 |
+| episodes + memory v1 | 0.89 | 0.64 | 0.51 | 0.72 | 0.72 | 215k | 4 |
+| **episodes + memory v2** | 0.85 | **0.77** | 0.67 | **0.88** | **0.80** | 178k | **0** |
+
+Paired: episodes + memory v2 − episodes is **+0.08** (9 up / 13 flat / 6 down, about 2 SE at n = 28).
+v2 − v1 with an agent is +0.07; memory alone gains +0.09 from v1 to v2.
+
+**Reading.**
+- **v1 memory added nothing.** Its bulk described threads instead of stating rules, and it misled on
+  "current rule" questions (0.51 vs 0.70).
+- **v2 is the first memory that helps.** It adds +0.08 over episodes, mostly on recall (0.68 → 0.77, and
+  "why" questions 0.64 → 0.88), with no wrong statements and 16% more tokens than episodes alone.
+- **Memory alone is still a map, not the answer** (0.38). The agent needs episodes and the transcript for
+  specifics.
+- Folding is slow (~140 s per step, sequential), because every step rewrites the whole memory and the cap
+  forces a second call.
+
+**Next.** Make dream emit edit operations applied by code (smaller output, code-enforced cap, no silent
+rewrites); repeat samples on the 28 tests to confirm the +0.08; add long-gap cases across sessions.
+
 ## 2026-09-26 — fix 1: discovery agents resume the session they find (`ts-1b9c30`)
 
 **Change** (prompt only, `471fb35`). The discovery prompt now says: once you know which session this continues, run `spin resume` on it to get the latest episode and the transcript after it. Episodes matched by search may be older than the current state.
