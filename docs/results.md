@@ -2,6 +2,43 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — repeat runs with cached summaries, and aetherflow
+
+**Why.** The last round was one run per case, and the fresh summary was regenerated each run, so gaps like chimi's
+0.95 vs 0.84 could be noise. Fresh summaries are now cached per session, compaction and window size
+(`data/eval/fresh-summary-cache`, gitignored), so every run of a case reads the same summary. Each setup below was
+run 3 times (memory v3 and native aetherflow: 2 and 1). Scores are the mean of per-run means; range is the lowest
+and highest run. Runs that hit the Codex usage limit were completed by rerunning only the failed cases.
+
+| Thread | Setup | Runs | Mean | Range | Pitfalls repeated/run | Tokens |
+|---|---|---|---|---|---|---|
+| chimi pick-ups (10) | user + tail + fresh summary | 3 | **0.87** | 0.85–0.89 | 0 | 38k |
+| | tail + fresh summary | 3 | 0.84 | 0.77–0.90 | 0 | 23k |
+| | native (earlier, 1 run) | 1 | 0.96 | | | 104k |
+| aetherflow pick-ups (10) | user + tail + fresh summary | 3 | 0.65 | 0.53–0.79 | 0 | 31k |
+| | tail + fresh summary | 3 | **0.70** | 0.61–0.78 | 0 | 21k |
+| | native | 1 | 0.58 | | 0 | 151k |
+| Eldspire pick-ups (10) | user + tail + fresh summary | 3 | 0.48 | 0.45–0.50 | 0.3 | 100k |
+| | user + tail + memory v3 | 2 | 0.49 | 0.47–0.50 | 1.0 | 110k |
+| | native (earlier, 1 run) | 1 | 0.51 | | | |
+| Eldspire recall (30) | user + tail + fresh summary | 3 | 0.64 | 0.63–0.65 | 1.7 | 120k |
+| | user + tail + memory v3 | 2 | 0.65 | 0.64–0.65 | 2.0 | 132k |
+| | native (earlier, 1 run) | 1 | 0.65 | | 3 | 165k |
+
+**Reading.**
+- **Chimi's 0.95 was luck.** Tail + fresh summary averages 0.84 over three runs (0.77–0.90), level with the full
+  recipe's 0.87, which is also steadier. Native's single 0.96 is still ahead by about 0.1.
+- **Aetherflow agrees with chimi.** On a coding thread, tail + fresh summary (0.70) and the full recipe (0.65) both
+  sit above native's one run (0.58), at a fifth of the tokens. Run-to-run spread here is large (0.53–0.79), so the
+  order among the three is not settled.
+- **On Eldspire the fresh summary and memory v3 are the same.** 0.48 vs 0.49 on pick-ups and 0.64 vs 0.65 on recall,
+  both level with native. v3 repeats a few more stale answers (1.0 vs 0.3 per run on pick-ups) and costs 10k more
+  tokens, so the fresh summary is the cheaper choice for the same score.
+- **Eldspire reruns are stable** (spread 0.02–0.05); chimi and aetherflow vary 0.1–0.25 between runs of the same
+  cases with the same summary. On build threads, single runs can't separate setups within about 0.15.
+- The full recipe (user + tail + fresh summary) is about native on all three threads. Nothing tested beats native
+  clearly. Next (not started): the two-part continuation summary in `variants.md`.
+
 ## 2026-09-28 — recent tail + fresh summary, and a second thread (chimi)
 
 **Why.** Everything before this was one design-brainstorm thread. To check generality, 10 honest pick-ups were built

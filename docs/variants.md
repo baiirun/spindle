@@ -17,7 +17,7 @@ changed? Cross-session discovery is out of scope.
 | `eldspire-probes-v1` | TTRPG log (Codex `019e85fe`, Jun 2 – Aug 7, 48 compactions) | recall: changed, current, why, tried, rejected; median fact age 26.5 days | 30 |
 | `eldspire-pickups-v1` | same | pick-ups after 5–50 h gaps, the user's real opener | 10 |
 | `pickups-other-v1` (chimi) | chimi, a programming-language build thread | pick-ups after 4–93 h gaps; openers like "go", "keep going", "what next" | 10 |
-| `pickups-other-v1` (aetherflow) | aetherflow, a coding thread | same | 10 (not yet run) |
+| `pickups-other-v1` (aetherflow) | aetherflow, a coding thread | same | 10 |
 
 All in `data/eval/` (gitignored). One model reads, writes summaries and grades in every arm (`internal/llm/llm.go`).
 
@@ -38,12 +38,12 @@ Every variant is a mix of these.
 
 ## Variants tested
 
-Scores are 0–1 against hand-checked checklists, one run each unless noted. With 10–30 cases, gaps under about
+Scores are 0–1 against hand-checked checklists, one run each unless noted; repeat runs give the mean and the range across runs. With 10–30 cases, gaps under about
 0.1 are noise.
 
 | Variant | Eldspire recall (30) | Eldspire pick-ups (10) | chimi pick-ups (10) | Verdict |
 |---|---|---|---|---|
-| Native Codex | 0.65 | 0.51 | 0.96 | benchmark |
+| Native Codex | 0.65 | 0.51 | 0.96 | benchmark; aetherflow 0.58 |
 | Raw transcript search | 0.25 | | | reports old versions as current |
 | Episodes search | 0.27 | | | same |
 | Memory v2 alone | 0.57 | | | tracks current rules, no reasons |
@@ -60,9 +60,10 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted. Wit
 | Tail only | | | 0.82 | misses pick-ups right after a compaction |
 | User + tail | | | 0.82 | |
 | Tail + v3 | | | 0.88 | v3 lags the live thread (4.5 h on chimi) |
-| **Tail + fresh summary** | 0.21 | 0.31 | **0.95** | matches native on build threads at 23k tokens |
+| **Tail + fresh summary** | 0.21 | 0.31 | 0.84 (3 runs, 0.77–0.90) | about native on build threads at ~22k tokens; aetherflow 0.70 (3, 0.61–0.78); the first chimi run's 0.95 was luck |
 | Tail + fresh summary + v3 | | | 0.83 | extra stale context hurts |
-| **User + tail + fresh summary** | **0.66** | **0.55** | 0.84 | about native on both threads; current best |
+| **User + tail + fresh summary** | 0.64 (3 runs, 0.63–0.65) | 0.48 (3, 0.45–0.50) | **0.87** (3, 0.85–0.89) | about native on all three threads; aetherflow 0.65 (3, 0.53–0.79); current best |
+| User + tail + v3 | 0.65 (2) | 0.49 (2) | | ties the fresh summary on Eldspire, with more stale answers and 10k more tokens |
 
 ## What we learned
 
@@ -70,7 +71,7 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted. Wit
    including "why" questions. On the build thread they're nearly empty ("go", "keep going").
 2. **The recent tail carries pick-ups on build threads.** The state lives in the agent's last turns.
 3. **A summary written fresh at the last compaction covers "where we just were"**, the gap the tail leaves right
-   after a compaction. It closed chimi's gap to native (0.82 → 0.95).
+   after a compaction. It lifts chimi from 0.82 to 0.84–0.87 averaged over three runs (the first run's 0.95 was luck).
 4. **Rewritten summaries lose old state.** Every chained variant, whatever the prompt, dropped older rules. A single
    fresh summary also can't hold old facts (Eldspire 0.21 without user messages). The Droid-shaped collapse is
    missing user history, not the model or the prompt.
@@ -120,7 +121,7 @@ bound, so search over older ones is eventually needed.
 
 ## In flight / next
 
-- Running: fresh summaries cached so reruns reuse them; user + tail + fresh summary 2–3 times on chimi and Eldspire;
-  tail + fresh summary 2–3 times on chimi (is 0.95 vs 0.84 real?); aetherflow's 10 pick-ups; user + tail + v3 on
-  Eldspire as the fair comparison against the fresh summary.
-- Next: build the two-half continuation summary and test it against user + tail + fresh summary on chimi and Eldspire.
+- Done 2026-09-28: fresh summaries are cached so reruns reuse them. Repeat runs and aetherflow are in `results.md`:
+  the chimi 0.95 did not hold up (0.84 over three runs), and on Eldspire the fresh summary and memory v3 tie.
+- Next (waiting for Byron): build the two-part continuation summary and test it against user + tail + fresh summary
+  on chimi, aetherflow and Eldspire, 3 runs each.
