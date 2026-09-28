@@ -2,6 +2,55 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — recent tail + fresh summary, and a second thread (chimi)
+
+**Why.** Everything before this was one design-brainstorm thread. To check generality, 10 honest pick-ups were built
+on chimi (a programming-language build thread; openers like "what next", "keep going", "go") in
+`data/eval/pickups-other-v1.jsonl` (10 aetherflow cases are built but not run).
+
+**New arm options** (`internal/eval/userarm.go`):
+- `--tail`: both sides of the conversation, verbatim, since the real thread's last compaction, which is what a
+  compacting agent still sees. Arm `tail` gives only this.
+- `--fresh-summary N`: one handoff summary written at that last compaction from the preceding N characters (150k),
+  with Droid's adaptive prompt. It is written once and not chained.
+- `--no-user-history`: omit the user-message history.
+
+**Chimi pick-ups (10, 1 sample):**
+
+| Arm | Score | Tokens |
+|---|---|---|
+| native | 0.96 | 104k |
+| **tail + fresh summary** | **0.95** | 23k |
+| tail + v3 memory | 0.88 | 26k |
+| user + tail + fresh summary | 0.84 | 40k |
+| tail + fresh summary + v3 | 0.83 | 27k |
+| tail only | 0.82 | 22k |
+| user + tail | 0.82 | 36k |
+| user + v3 (no tail) | 0.30 | 37k |
+| user only | 0.21 | 33k |
+
+**Eldspire with the same options:**
+
+| Arm | Recall probes (30) | Pick-ups (10) |
+|---|---|---|
+| native | 0.65 | 0.51 |
+| user + tail + fresh summary | **0.66** (1 pitfall repeated, the lowest) | 0.55 |
+| user + memory v3 | 0.67 | 0.44 |
+| tail + fresh summary | 0.21 | 0.31 |
+
+**Reading.**
+- **User-messages-as-base was an Eldspire artifact.** On chimi the user's words alone score 0.21; the state lives in the
+  agent's turns.
+- **The recent tail carries build-thread pick-ups** (0.82 alone). The gap to native comes from pick-ups right after a
+  compaction (a compaction 3 minutes before the question), and a fresh summary written at that compaction closes it (0.95).
+- **Old facts and rationale need the user's messages.** On Eldspire, tail + fresh summary alone collapses (0.21);
+  adding the user's messages brings it level with native (0.66 vs 0.65) with the fewest stale answers.
+- **No single arm is best on both yet.** user + tail + fresh summary is within noise of native on both threads (0.84
+  chimi, 0.66/0.55 Eldspire). The fresh summary is regenerated per run, which adds variance; one sample, 10–30 cases.
+- **v3 on top of tail + summary hurts** (0.83 on chimi). Extra, partly stale context pulls answers off course.
+- Design implied: recent verbatim tail + a fresh summary at each compaction (no chain) + the user's message history.
+  Next: rerun the combined arm with fixed, cached summaries and 2–3 samples on both threads, and run aetherflow.
+
 ## 2026-09-28 — pick-up continuation cases, and Factory Droid's compaction
 
 **Pick-up set** (`data/eval/eldspire-pickups-v1.jsonl`, gitignored): 10 real moments in the TTRPG thread where the

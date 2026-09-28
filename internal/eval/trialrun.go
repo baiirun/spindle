@@ -26,17 +26,20 @@ const (
 
 // TrialRunOptions configures one scored pass over a trial set.
 type TrialRunOptions struct {
-	CorpusRoot  string
-	EpisodeRoot string
-	Version     string // episode version directory name
-	Binary      string // built spin binary
-	Arm         string
-	Trials      []Trial
-	RunDir      string
-	ScratchDir  string // snapshots live here; removed per trial
-	MemoryDir   string // memory arms: a dream output directory with steps.json
-	UserLast    int    // user arms: keep only the user's last N messages (0 = all)
-	Workers     int
+	CorpusRoot    string
+	EpisodeRoot   string
+	Version       string // episode version directory name
+	Binary        string // built spin binary
+	Arm           string
+	Trials        []Trial
+	RunDir        string
+	ScratchDir    string // snapshots live here; removed per trial
+	MemoryDir     string // memory arms: a dream output directory with steps.json
+	UserLast      int    // user arms: keep only the user's last N messages (0 = all)
+	Tail          bool   // user arms: add the verbatim turns since the thread's last real compaction
+	NoUserHistory bool   // user arms: omit the user-message history (context blocks only)
+	FreshSummary  int    // user arms: add a fresh handoff summary at the last compaction from this many chars before it
+	Workers       int
 }
 
 // TrialResult is one trial's outcome in one arm.
@@ -117,7 +120,7 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 		err = memoryBrief(o, t, &r)
 	case ArmMemoryAgent:
 		err = memoryAgentBrief(ctx, o, t, &r)
-	case ArmUser, ArmUserMemory, ArmUserHandoff, ArmHandoff:
+	case ArmUser, ArmUserMemory, ArmUserHandoff, ArmHandoff, ArmTail:
 		err = userBrief(ctx, o, t, &r)
 	default:
 		err = spinBrief(ctx, o, t, &r)

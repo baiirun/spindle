@@ -26,6 +26,7 @@ const (
 	ArmUserMemory  = "user-memory"
 	ArmUserHandoff = "user-handoff"
 	ArmHandoff     = "handoff" // summary + turns since it, without the full user-message history (Factory Droid's shape)
+	ArmTail        = "tail"    // only the verbatim turns since the thread's last real compaction
 )
 
 // codexCompactPrompt is Codex CLI's local (non-remote) compaction prompt, as
@@ -99,6 +100,23 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 			"The handoff summary was written at the last context compaction, covering both sides of the conversation.\n"+
 			"Recent turns (both sides) follow it verbatim.", r.MemoryAsOf, text, tail)
 	}
+	if o.Tail || o.Arm == ArmTail {
+		tail, since, err := recentTail(s, t)
+		if err != nil {
+			return err
+		}
+		extra += fmt.Sprintf("\n\n<recent_turns since=%q>\n%s</recent_turns>\n\nThe recent turns are both sides of the conversation, verbatim, since the thread's last context compaction.", since.UTC().Format(time.RFC3339), tail)
+	}
+	if o.FreshSummary > 0 {
+		sum, err := freshSummary(ctx, s, t, o.FreshSummary)
+		if err != nil {
+			return err
+		}
+		extra = "\n\n<compaction_summary>\n" + sum + "\n</compaction_summary>" + extra
+	}
+	if o.Arm == ArmTail || o.NoUserHistory {
+		return contextOnlyBrief(ctx, o, t, r, extra)
+	}
 	msgs := renderItems(s, time.Time{}, t.AskedAt, corpus.RoleUser)
 	which := "all of the user's own messages in\nthis conversation so far"
 	if o.Arm == ArmHandoff {
@@ -144,6 +162,74 @@ func handoffOnlyBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialR
 		trialJob(t), finalInstruction(t))
 	started := time.Now()
 	res, err := llm.Run(ctx, llm.Request{Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute, System: system, Prompt: strings.TrimSpace(context) + "\n\n" + trialUserTurn(t)})
+	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
+	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
+	return err
+}
+
+// recentTail renders both sides of the conversation since the real thread's
+// last compaction before the cutoff: what a compacting agent still has verbatim.
+func recentTail(s corpus.Session, t Trial) (string, time.Time, error) {
+	path, err := findCodexRollout(NativePrior(t))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	cuts, err := codexCompactions(path)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var since time.Time
+	for _, c := range cuts {
+		if c.Before(t.AskedAt) && c.After(since) {
+			since = c
+		}
+	}
+	return renderItems(s, since, t.AskedAt, corpus.RoleUser, corpus.RoleAssistant), since, nil
+}
+
+// freshSummary writes one handoff summary at the thread's last real compaction
+// before the cutoff, from the preceding window of both sides of the
+// conversation (up to maxChars), with Droid's adaptive prompt. Unlike the
+// chained handoffs, it is written fresh, as a compacting agent sees its context.
+func freshSummary(ctx context.Context, s corpus.Session, t Trial, maxChars int) (string, error) {
+	_, since, err := recentTail(s, t)
+	if err != nil {
+		return "", err
+	}
+	window := renderItems(s, time.Time{}, since, corpus.RoleUser, corpus.RoleAssistant)
+	if len(window) > maxChars {
+		window = window[len(window)-maxChars:]
+		if i := strings.Index(window, "\n\n["); i >= 0 {
+			window = window[i+2:]
+		}
+	}
+	prompt := strings.Replace(droidAdaptivePrompt,
+		"You've previously produced a summary of the session up to a certain point. There have been new messages since then. You must update the summary to cover these messages, adhering to the guidelines provided below.",
+		"You are to read the full conversation and produce a summary based on guidelines provided below.", 1)
+	res, err := llm.Run(ctx, llm.Request{Model: llm.Reader, System: "You are the assistant in the conversation below.\n\n" + prompt,
+		Prompt: "<conversation>\n" + window + "</conversation>", Timeout: 15 * time.Minute})
+	if err != nil {
+		return "", err
+	}
+	out := strings.TrimSpace(res.Text)
+	if i := strings.Index(out, "<summary>"); i >= 0 {
+		out = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(out[i+len("<summary>"):]), "</summary>"))
+	}
+	return out, nil
+}
+
+// contextOnlyBrief answers from the assembled context blocks alone, without the
+// user-message history.
+func contextOnlyBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult, blocks string) error {
+	work := filepath.Join(o.ScratchDir, t.ID, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(filepath.Join(o.ScratchDir, t.ID))
+	system := fmt.Sprintf("You are continuing a long-running project conversation. You have only the context below.\n\n"+
+		"Use only this context. Do not run commands or read files; your only job is to %s.\n%s", trialJob(t), finalInstruction(t))
+	started := time.Now()
+	res, err := llm.Run(ctx, llm.Request{Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute, System: system, Prompt: strings.TrimSpace(blocks) + "\n\n" + trialUserTurn(t)})
 	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
 	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
 	return err

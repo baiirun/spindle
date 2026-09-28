@@ -202,12 +202,15 @@ func evalTrials(args []string) error {
 	tag := fs.String("tag", "", "label for this run")
 	memoryDir := fs.String("memory", "", "memory and user-memory/user-handoff arms: directory holding steps.json")
 	userLast := fs.Int("user-last", 0, "user arms: keep only the user's last N messages (0 = all)")
+	tail := fs.Bool("tail", false, "user arms: add the verbatim turns since the thread's last real compaction")
+	noUser := fs.Bool("no-user-history", false, "user arms: omit the user-message history")
+	fresh := fs.Int("fresh-summary", 0, "user arms: add a fresh handoff summary at the last compaction, written from this many chars before it")
 	fs.Parse(args)
 	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
 		return fmt.Errorf("--arm %s needs --memory", *arm)
 	}
 	switch *arm {
-	case eval.ArmMemory, eval.ArmMemoryAgent, eval.ArmRaw, eval.ArmEpisodes, eval.ArmNative, eval.ArmCold, eval.ArmUser, eval.ArmUserMemory, eval.ArmUserHandoff, eval.ArmHandoff:
+	case eval.ArmMemory, eval.ArmMemoryAgent, eval.ArmRaw, eval.ArmEpisodes, eval.ArmNative, eval.ArmCold, eval.ArmUser, eval.ArmUserMemory, eval.ArmUserHandoff, eval.ArmHandoff, eval.ArmTail:
 	default:
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
@@ -256,7 +259,7 @@ func evalTrials(args []string) error {
 	}
 	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
 		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
-		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast, Tail: *tail, NoUserHistory: *noUser, FreshSummary: *fresh,
 	})
 	s := eval.SummarizeTrials(*arm, results)
 	b, _ := json.MarshalIndent(s, "", "  ")
