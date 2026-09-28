@@ -140,8 +140,22 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 		return err
 	}
 	defer os.RemoveAll(filepath.Join(o.ScratchDir, t.ID))
-	system := fmt.Sprintf("You are continuing a long-running project conversation. Below are %s, verbatim and in order, with item IDs. The assistant's replies are not included.%s\n\n"+
-		"Use only this context. Do not run commands or read files; your only job is to %s.\n%s",
+	rules := "Use only this context. Do not run commands or read files; your only job is to %s.\n%s"
+	// Before the first compaction the whole conversation is in the tail and there is no record yet.
+	if _, since, err := recentTail(s, t); err == nil && !since.IsZero() && o.TwoPart && o.TwoPartLedger == "record" {
+		p, err := RecordPath(t)
+		if err != nil {
+			return err
+		}
+		if p, err = filepath.Abs(p); err != nil {
+			return err
+		}
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("decision record not built for %s (run spin eval two-part --ledger record): %w", t.ID, err)
+		}
+		rules = strings.ReplaceAll(fmt.Sprintf(recordToolNote, shellQuote(o.Binary), shellQuote(p)), "%", "%%") + "\n\nYour only job is to %s.\n%s"
+	}
+	system := fmt.Sprintf("You are continuing a long-running project conversation. Below are %s, verbatim and in order, with item IDs. The assistant's replies are not included.%s\n\n"+rules,
 		which, map[bool]string{true: " Additional context follows them.", false: ""}[extra != ""], trialJob(t), finalInstruction(t))
 	prompt := "<user_messages>\n" + msgs + "</user_messages>" + extra + "\n\n" + trialUserTurn(t)
 	started := time.Now()
@@ -150,12 +164,32 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
 	for _, c := range res.ToolCalls {
 		var ev commandEvent
-		if json.Unmarshal(c.Input, &ev) == nil && ev.Item.Command != "" {
+		if json.Unmarshal(c.Input, &ev) != nil || ev.Item.Command == "" {
+			continue
+		}
+		if o.Binary != "" && strings.Contains(ev.Item.Command, o.Binary) && strings.Contains(ev.Item.Command, "decisions") {
+			r.SpinCalls++
+		} else {
 			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
 		}
 	}
 	return err
 }
+
+// recordToolNote tells the agent the decision record exists and how to search
+// it. The record is the one tool: everything else stays prompt-only.
+const recordToolNote = `The context below has no list of earlier decisions. Instead there is a decision record: a long, detailed log
+kept across every compaction of this conversation, of the decisions in force (what, why, who decided, what it
+replaced), things tried or rejected and why, and the user's standing preferences and corrections. Each entry cites
+the item IDs it came from. It holds no progress notes or next steps; those are in the summary below. Search it with:
+
+  %s decisions --record %s --query "a few words"
+
+It returns the best-matching entries with their citations (8 by default; add --limit N for more). Search it
+whenever you need an earlier decision, its reason, who made it, whether something was already tried or rejected, or
+a standing preference, especially anything older than the recent turns. Try other words if the first search misses.
+Trust a record entry over an older user message it replaced, and the recent turns over both. This command is the
+only thing you may run: don't run other commands or read files, and don't edit anything.`
 
 // handoffOnlyBrief answers from the compaction summary and the verbatim turns
 // since it, as a compacting agent would, with no separate user-message history.

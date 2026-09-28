@@ -2,6 +2,66 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — decision record as a search, not in the prompt
+
+**Why.** The last round showed the long, specific v1 ledger carries recall but overflows any prompt budget, and a
+merged one loses detail. Byron chose recall: keep the list long and detailed, move it out of the summary into
+something the agent searches, and make the Now part the whole summary.
+
+**What was built.**
+- **Decision record** (`spin eval two-part --ledger record`, `internal/eval/record.go`): the v1 ledger mechanism
+  (add / replace / drop edits applied by code, chained over every real compaction) with no size budget, no
+  consolidation, no eviction and no 400-character cut. The prompt asks for one detailed entry per decision, keeps
+  progress, open questions and one-off instructions out, and tells the model to replace or drop only when something
+  actually changed. Each entry cites 1–2 item IDs. Cached under `data/eval/two-part-cache/<session>/record/`.
+- **Search** (`spin decisions --record FILE --query "..." [--limit N]`): ranks entries by word overlap weighted by
+  rarity, key counted twice, light stemming; returns the top 8 with who decided, what they replaced and citations.
+- **Arm** (`--two-part --ledger record`): user messages + recent tail + the cached Now part (same as Now only), and
+  the system prompt says the record exists, what it holds, when to search it, and that it is the only command
+  allowed. Before a thread's first compaction there is no record and no tool (chimi ch-001).
+- **Audit** (`spin eval record-audit`): one model call per thread reads the final record against every user message
+  and the latest Now part and flags stale entries and entries that aren't decisions. A spot check: changes that show
+  only in the assistant's turns can be missed.
+
+**Setups**, 3 runs each; Now only and Now + v1 ledger are the cached runs from the last two rounds. Mean of per-run
+means (range across runs); paired is the record minus Now only on the same cases (± standard error).
+
+| Set | Now only | Now + v1 ledger in prompt | Now + searchable record | Paired vs Now only | Searched |
+|---|---|---|---|---|---|
+| chimi pick-ups (10) | **0.94** (0.88–0.97) | 0.93 (0.88–0.95) | 0.89 (0.85–0.97) | −0.04 ± 0.03 (2 better, 6 worse) | 23 of 30, 1.1 calls |
+| aetherflow pick-ups (10) | 0.71 (0.67–0.78) | **0.72** (0.69–0.76) | 0.65 (0.65–0.65) | −0.06 ± 0.06 (3 better, 4 worse) | 30 of 30, 1.5 calls |
+| Eldspire pick-ups (10) | 0.54 (0.49–0.59) | 0.55 (0.48–0.60) | **0.64** (0.52–0.73) | +0.09 ± 0.08 (6 better, 3 worse); vs v1 +0.08 ± 0.04 | 30 of 30, 1.5 calls |
+| Eldspire recall (30) | 0.61 (0.57–0.66) | 0.67 (0.63–0.71) | **0.68** (0.65–0.72) | +0.07 ± 0.05 (15 better, 11 worse); vs v1 +0.01 ± 0.05 | 78 of 90, 1.1 calls |
+
+Pitfalls repeated per run, Eldspire pick-ups / recall: Now only 0 / 3.0, v1 1.0 / 2.7, record 0 / 1.0. Input tokens
+per case roughly double with search (each search is another turn over the whole prompt): chimi 37k → 83k,
+aetherflow 31k → 83k, Eldspire 100–119k → 257–264k. No run used any other command except one stray, harmless one.
+
+**Record across compactions.**
+
+| Thread | Compactions | Entries at end | Characters at end | Replaced | Dropped | Audit: stale | Audit: not a decision |
+|---|---|---|---|---|---|---|---|
+| chimi | 45 | 92 | 55k | 0 | 0 | 2 | 4 |
+| aetherflow | 30 | 55 | 33k | 2 | 0 | 0 | 4 |
+| Eldspire | 48 | 146 | 93k | 5 | 0 | 1 | 3 |
+
+**Reading.**
+- **On the design thread the record is the best setup so far on both kinds of case.** Eldspire recall 0.68 ties the
+  v1 ledger in the prompt (0.67) and beats Now only by 0.07; Eldspire pick-ups 0.64 is 0.08–0.09 above both, level
+  with ledger v2's 0.65 without v2's recall loss. It also repeats the fewest pitfalls (1.0 per run on recall vs
+  2.7–3.0). Pick-up run spread is wide (0.52–0.73), so the pick-up gain is a lead, not settled.
+- **On the build threads it costs a little.** chimi −0.04 and aetherflow −0.06 against Now only, each about one to
+  two standard errors. The state these cases need is in the recent turns and the Now part; searching pulls in older
+  design decisions and the brief drifts toward them.
+- **Agents do search** when told the record exists: 88% of cases, about one or two searches each.
+- **The model almost never edits the record.** 7 replaces and 0 drops across 123 compactions: it adds and rarely
+  goes back. The audit found 3 stale entries (chimi: an empty-block rule and a `Runtime.run` root that later
+  decisions replaced, both still stated as in force; Eldspire: a Combat / Pack / Cargo Load split superseded by the
+  10-slot inventory) and 11 entries that are open questions or unapproved proposals filed as decisions. Stale entries
+  sit next to their replacements, so a search can return both. This is the main risk before relying on the record
+  at longer time spans.
+- Cost is the other price: searching doubles input tokens per case.
+
 ## 2026-09-28 — which half helps: Now only, and a consolidating ledger (v2)
 
 **Why.** The first two-part round beat the fresh summary everywhere, but its ledger overflowed and code eviction

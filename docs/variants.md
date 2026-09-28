@@ -2,7 +2,7 @@
 
 What a fresh or recycled project coordinator is handed so it can continue a long-running thread, every variant
 tried so far, what each scored, and the design we are moving to. Scores and raw tables are in `results.md`; this
-page is the map. Last updated 2026-09-28.
+page is the map. Last updated 2026-09-28 (searchable decision record).
 
 ## The question
 
@@ -34,6 +34,7 @@ Every variant is a mix of these.
 | **Memory v1 / v2** | `spin dream` folds episodes into a project memory, rewritten whole at each step. v2 adds "current rules and decisions", max 6 threads, a code-built history index. | `internal/dream` |
 | **Memory v3** | Same fold, but the model emits add / replace / drop edits and code applies them, each citing its source. Sections: current rules and decisions (value, why, who decided, what it replaced), active threads, recently changed, history. | `internal/dream/ops.go` |
 | **Two-part summary** | Now (fresh at each compaction, latest exchange copied verbatim, next step, open questions) + ledger (chained add / replace / drop edits applied by code: decisions, tried or rejected, preferences). Cached. | `spin eval two-part`, `--two-part` |
+| **Decision record (searched)** | The v1 ledger with no budget, eviction or clipping, kept out of the prompt; the agent searches it with `spin decisions`. Summary = Now part only. | `--ledger record`, `internal/eval/record.go` |
 | **Episodes / raw** | Searchable episode summaries of ~40k-character chunks, or the raw transcript, via `spin` tools. | `ArmEpisodes`, `ArmRaw` |
 | **Native** | Reopen the real Codex thread cut at the cutoff, with its own compaction (user messages + encrypted summary + tail), no tools. The benchmark. | `ArmNative` |
 
@@ -67,6 +68,7 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 | User + tail + v3 | 0.65 (2) | 0.49 (2) | | ties the fresh summary on Eldspire, with more stale answers and 10k more tokens |
 | **User + tail + two-part summary** | 0.67 (3, 0.63–0.71) | **0.55** (3, 0.49–0.60) | **0.93** (3, 0.88–0.95) | ahead of the fresh summary on all four sets by 0.03–0.07 (each about one standard error); aetherflow 0.71 (3, 0.69–0.76); new best, but the ledger half overflowed (see below) |
 | User + tail + Now part only | 0.61 (3, 0.57–0.66) | 0.54 (3) | **0.94** (3, 0.88–0.97) | the pick-up gain is all here; aetherflow 0.71; recall falls without a ledger |
+| **User + tail + Now + searchable decision record** | **0.68** (3, 0.65–0.72) | 0.64 (3, 0.52–0.73) | 0.89 (3, 0.85–0.97) | best on Eldspire recall and pick-ups together, fewest stale answers; costs 0.04–0.06 on build threads (aetherflow 0.65) and doubles tokens |
 | User + tail + two-part, ledger v2 (consolidating) | 0.62 (3) | **0.65** (3, 0.61–0.71) | 0.87 (3) | best Eldspire pick-ups so far, but loses recall and chimi; aetherflow 0.72 |
 
 ## What we learned
@@ -89,6 +91,11 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 8. **The two halves do different jobs.** The Now part alone gives the whole pick-up gain; the long, specific v1 ledger
    gives recall (+0.06 on Eldspire). A consolidating ledger (v2) that merges down to 10–16 entries helped Eldspire
    pick-ups most (0.65) but lost recall and chimi detail.
+
+9. **A searched record gives the long ledger's recall without crowding the prompt.** Out of the prompt and never
+   trimmed, the record matched the v1 ledger on Eldspire recall (0.68) and lifted Eldspire pick-ups to 0.64, but
+   cost a little on build threads, where the needed state is recent. The model adds entries and almost never
+   replaces or drops them (7 replaces in 123 compactions), so stale entries and misfiled proposals accumulate.
 
 ## How other agents compact (checked in source or 2026 docs)
 
@@ -138,6 +145,7 @@ ledger, and replace silent eviction with an explicit merge-or-drop step.
 ## In flight / next
 
 - Done 2026-09-28: two-part summary (ledger v1), Now only, and ledger v2, 3 runs each; see `results.md`.
-- Open decision for Byron: what the ledger is for (recall, long and specific; or pick-ups, short and merged).
-  Candidates: lift the 400-character cap on merged entries; or keep the v1 ledger out of the prompt as something to
-  search, with the Now part as the compaction summary.
+- Decided 2026-09-28 (Byron): the ledger is for recall, so it's a long, searchable record out of the prompt, and
+  the Now part is the whole summary. Tested the same day; see `results.md`.
+- Open, not started: the record rarely updates itself (3 stale entries, 11 misfiled proposals across three
+  threads); build threads lose 0.04–0.06 with search; tokens double. Candidate fixes need Byron's go-ahead.

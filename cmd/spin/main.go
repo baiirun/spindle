@@ -22,6 +22,7 @@ commands:
   search   find episodes and transcript passages
   read     expand an episode or transcript reference
   related  follow explicit episode continuation links
+  decisions search a decision record (eval: the two-part ledger kept out of the prompt)
   dream    fold a project's episodes into project memory (working state, history, superseded)
   snapshot build a leak-free view of spindle data before a time (for trials)
   eval     mine | label | run | report | continue
@@ -52,6 +53,8 @@ func main() {
 		err = runRead(os.Args[2:])
 	case "related":
 		err = runRelated(os.Args[2:])
+	case "decisions":
+		err = runDecisions(os.Args[2:])
 	case "dream":
 		err = runDream(os.Args[2:])
 	case "snapshot":

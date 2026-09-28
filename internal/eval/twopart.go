@@ -170,7 +170,7 @@ func consolidate(ctx context.Context, l *Ledger, step int, cut time.Time, valid 
 			}
 		}
 		l.Ops += len(out.Ops)
-		l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid)
+		l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid, ledgerFieldChars)
 		fmt.Printf("consolidate step %d: %d → %d chars, %d ops\n", step, len(cur), len(l.Render()), len(out.Ops))
 	}
 	return nil
@@ -199,7 +199,8 @@ Rules:
 
 // TwoPartSummary returns the cached two-part summary at the trial's last real
 // compaction and when that compaction happened.
-// ledger is "none" (Now only), "v1" or "v2". Every version reads the same Now parts.
+// ledger is "none" (Now only), "v1", "v2", or "record" (Now only in the prompt; the
+// record is searched with spin decisions). Every version reads the same Now parts.
 func TwoPartSummary(s corpus.Session, t Trial, windowChars int, ledger string) (string, time.Time, error) {
 	_, since, err := recentTail(s, t)
 	if err != nil {
@@ -221,7 +222,7 @@ func TwoPartSummary(s corpus.Session, t Trial, windowChars int, ledger string) (
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("two-part summary not built for %s step %d (run spin eval two-part): %w", t.ID, k+1, err)
 	}
-	if ledger == "none" {
+	if ledger == "none" || ledger == "record" { // the record is searched through spin, not shown
 		return "# Now\n\n" + strings.TrimSpace(string(now)), since, nil
 	}
 	l, err := readLedger(ledgerPath(ledgerDir(dir, ledger), k+1))
@@ -280,7 +281,8 @@ func (l Ledger) Render() string {
 }
 
 // apply edits the ledger. It returns how many ops it could not apply.
-func (l *Ledger) apply(ops []ledgerOp, step int, date string, valid map[string]bool) {
+// fieldCap clips text and why (0: no clip; the searchable record keeps full detail).
+func (l *Ledger) apply(ops []ledgerOp, step int, date string, valid map[string]bool, fieldCap int) {
 	for _, o := range ops {
 		key := strings.TrimSpace(o.Key)
 		if key == "" {
@@ -301,18 +303,18 @@ func (l *Ledger) apply(ops []ledgerOp, step int, date string, valid map[string]b
 		old, exists := l.Entries[key]
 		switch o.Op {
 		case "add", "replace":
-			text := clipTo(o.Text, ledgerFieldChars)
+			text := clipField(o.Text, fieldCap)
 			if text == "" {
 				l.Skipped++
 				continue
 			}
-			e := LedgerEntry{Kind: o.Kind, Text: text, Why: clipTo(o.Why, ledgerFieldChars), Who: strings.TrimSpace(o.Who),
+			e := LedgerEntry{Kind: o.Kind, Text: text, Why: clipField(o.Why, fieldCap), Who: strings.TrimSpace(o.Who),
 				UserWords: clipTo(o.UserWords, 300), Date: orDate(o.Date, date), Cites: cites, Step: step}
 			if exists {
 				if old.Text == text {
 					e.Replaced = old.Replaced
 				} else {
-					e.Replaced = fmt.Sprintf("%q (%s)", clipTo(old.Text, 200), old.Date)
+					e.Replaced = fmt.Sprintf("%q (%s)", clipField(old.Text, fieldCap/2), old.Date)
 					l.Log = append(l.Log, LedgerChange{Step: step, Op: "replace", Key: key, Old: old.Text, New: text, Reason: o.Why})
 				}
 			}
@@ -361,9 +363,12 @@ func (l *Ledger) enforceCap(step int) {
 // Now parts are shared by all ledger versions (they are written with the v1
 // ledger in view), so ledger versions differ only in the ledger.
 func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []time.Time, windowChars, workers int, version string) error {
-	system := ledgerSystem
-	if version == "v2" {
+	system, fieldCap := ledgerSystem, ledgerFieldChars
+	switch version {
+	case "v2":
 		system = ledgerSystemV2
+	case "record":
+		system, fieldCap = recordSystem, 0
 	}
 	path, err := findCodexRollout(session)
 	if err != nil {
@@ -406,18 +411,23 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 			cur := l.Render()
 			prompt := fmt.Sprintf("<ledger chars=%d budget=%d>\n%s\n</ledger>\n\n<conversation_since>\n%s</conversation_since>",
 				len(cur), ledgerBudget, cur, chunk)
+			if version == "record" {
+				prompt = fmt.Sprintf("<record entries=%d>\n%s\n</record>\n\n<conversation_since>\n%s</conversation_since>", len(l.Entries), cur, chunk)
+			}
 			req := llm.Request{Model: llm.Reader, System: system, Prompt: prompt, Schema: ledgerSchema, Timeout: 20 * time.Minute}
 			if _, err := llm.JSONRequest(ctx, req, &out); err != nil {
 				return fmt.Errorf("ledger step %d: %w", step, err)
 			}
 			l.Ops += len(out.Ops)
-			l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid)
+			l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid, fieldCap)
 			if version == "v2" && len(l.Render()) > ledgerBudget {
 				if err := consolidate(ctx, &l, step, cut, valid); err != nil {
 					return fmt.Errorf("ledger step %d: %w", step, err)
 				}
 			}
-			l.enforceCap(step)
+			if version != "record" { // the record is searched, not prompted, so it has no cap
+				l.enforceCap(step)
+			}
 		}
 		l.AsOf, l.Step = cut, step
 		if err := writeJSON(p, l); err != nil {
@@ -639,6 +649,13 @@ func writeJSON(p string, v any) error {
 		return err
 	}
 	return os.Rename(tmp, p)
+}
+
+func clipField(s string, n int) string {
+	if n <= 0 {
+		return strings.TrimSpace(s)
+	}
+	return clipTo(s, n)
 }
 
 func clipTo(s string, n int) string {

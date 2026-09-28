@@ -27,6 +27,8 @@ func runEval(args []string) error {
 		return evalHandoffs(args[1:])
 	case "two-part":
 		return evalTwoPart(args[1:])
+	case "record-audit":
+		return evalRecordAudit(args[1:])
 	case "trials-mine":
 		return evalTrialsMine(args[1:])
 	case "trials-openers":
@@ -207,7 +209,7 @@ func evalTrials(args []string) error {
 	tail := fs.Bool("tail", false, "user arms: add the verbatim turns since the thread's last real compaction")
 	noUser := fs.Bool("no-user-history", false, "user arms: omit the user-message history")
 	fresh := fs.Int("fresh-summary", 0, "user arms: add a fresh handoff summary at the last compaction, written from this many chars before it")
-	twoPartLedger := fs.String("ledger", "v1", "two-part: ledger version v1 | v2, or none for the Now part alone")
+	twoPartLedger := fs.String("ledger", "v1", "two-part: ledger version v1 | v2, none for the Now part alone, or record (Now part + spin decisions search)")
 	twoPart := fs.Bool("two-part", false, "user arms: use the two-part continuation summary built by 'spin eval two-part' (Now window = --fresh-summary)")
 	fs.Parse(args)
 	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
@@ -395,7 +397,7 @@ func evalTwoPart(args []string) error {
 	in := fs.String("in", "", "comma-separated trial sets: build up to each Codex thread's latest cutoff")
 	window := fs.Int("window", 150000, "characters before each compaction the Now part is written from")
 	workers := fs.Int("workers", 4, "parallel Now parts")
-	ledger := fs.String("ledger", "v1", "ledger version: v1 (writes the Now parts too) | v2 (reuses v1's Now parts)")
+	ledger := fs.String("ledger", "v1", "ledger version: v1 (writes the Now parts too) | v2 | record (unbounded, searched with spin decisions); v2 and record reuse v1's Now parts")
 	fs.Parse(args)
 	if *in == "" {
 		return errors.New("eval two-part: want --in")
@@ -417,6 +419,50 @@ func evalTwoPart(args []string) error {
 		if err := eval.BuildTwoPart(context.Background(), session, u, nowAt[session], *window, *workers, *ledger); err != nil {
 			return fmt.Errorf("%s: %w", session, err)
 		}
+	}
+	return nil
+}
+
+func runDecisions(args []string) error {
+	fs := flag.NewFlagSet("decisions", flag.ExitOnError)
+	record := fs.String("record", "", "decision record (a ledger JSON file built by 'spin eval two-part --ledger record')")
+	query := fs.String("query", "", "words to search for")
+	limit := fs.Int("limit", 8, "most entries to return")
+	fs.Parse(args)
+	if *record == "" || strings.TrimSpace(*query) == "" {
+		return errors.New("decisions: want --record and --query")
+	}
+	b, err := os.ReadFile(*record)
+	if err != nil {
+		return err
+	}
+	var l eval.Ledger
+	if err := json.Unmarshal(b, &l); err != nil {
+		return err
+	}
+	fmt.Print(eval.RenderHits(l, eval.SearchRecord(l, *query, *limit)))
+	return nil
+}
+
+func evalRecordAudit(args []string) error {
+	fs := flag.NewFlagSet("eval record-audit", flag.ExitOnError)
+	session := fs.String("session", "", "Codex session whose last decision record to audit")
+	out := fs.String("out", "", "write flags as JSON here")
+	fs.Parse(args)
+	if *session == "" {
+		return errors.New("eval record-audit: want --session")
+	}
+	l, flags, err := eval.AuditRecord(context.Background(), *session)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("record step %d as of %s: %d entries, %d flagged\n", l.Step, l.AsOf.Format(time.RFC3339), len(l.Entries), len(flags))
+	for _, f := range flags {
+		fmt.Printf("- %s [%s] %s (%s)\n", f.Key, f.Problem, f.Explanation, f.Evidence)
+	}
+	if *out != "" {
+		b, _ := json.MarshalIndent(flags, "", "  ")
+		return os.WriteFile(*out, b, 0o644)
 	}
 	return nil
 }
