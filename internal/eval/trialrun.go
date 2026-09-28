@@ -39,6 +39,7 @@ type TrialRunOptions struct {
 	Tail          bool   // user arms: add the verbatim turns since the thread's last real compaction
 	NoUserHistory bool   // user arms: omit the user-message history (context blocks only)
 	FreshSummary  int    // user arms: add a fresh handoff summary at the last compaction from this many chars before it
+	TwoPart       bool   // user arms: use the cached two-part continuation summary (Now from FreshSummary chars + ledger) instead
 	Workers       int
 }
 

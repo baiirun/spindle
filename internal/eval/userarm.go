@@ -107,7 +107,15 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 		}
 		extra += fmt.Sprintf("\n\n<recent_turns since=%q>\n%s</recent_turns>\n\nThe recent turns are both sides of the conversation, verbatim, since the thread's last context compaction.", since.UTC().Format(time.RFC3339), tail)
 	}
-	if o.FreshSummary > 0 {
+	if o.TwoPart {
+		sum, _, err := TwoPartSummary(s, t, o.FreshSummary)
+		if err != nil {
+			return err
+		}
+		if sum != "" {
+			extra = "\n\n<compaction_summary>\n" + sum + "\n</compaction_summary>" + extra
+		}
+	} else if o.FreshSummary > 0 {
 		sum, err := freshSummary(ctx, s, t, o.FreshSummary)
 		if err != nil {
 			return err

@@ -18,13 +18,15 @@ import (
 
 func runEval(args []string) error {
 	if len(args) < 1 {
-		return errors.New("eval: want mine | label | run | report | continue | trials | handoffs | trials-mine | trials-label | trials-split | trials-verify | trials-openers")
+		return errors.New("eval: want mine | label | run | report | continue | trials | handoffs | two-part | trials-mine | trials-label | trials-split | trials-verify | trials-openers")
 	}
 	switch args[0] {
 	case "trials":
 		return evalTrials(args[1:])
 	case "handoffs":
 		return evalHandoffs(args[1:])
+	case "two-part":
+		return evalTwoPart(args[1:])
 	case "trials-mine":
 		return evalTrialsMine(args[1:])
 	case "trials-openers":
@@ -205,6 +207,7 @@ func evalTrials(args []string) error {
 	tail := fs.Bool("tail", false, "user arms: add the verbatim turns since the thread's last real compaction")
 	noUser := fs.Bool("no-user-history", false, "user arms: omit the user-message history")
 	fresh := fs.Int("fresh-summary", 0, "user arms: add a fresh handoff summary at the last compaction, written from this many chars before it")
+	twoPart := fs.Bool("two-part", false, "user arms: use the two-part continuation summary built by 'spin eval two-part' (Now window = --fresh-summary)")
 	fs.Parse(args)
 	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
 		return fmt.Errorf("--arm %s needs --memory", *arm)
@@ -259,7 +262,7 @@ func evalTrials(args []string) error {
 	}
 	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
 		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
-		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast, Tail: *tail, NoUserHistory: *noUser, FreshSummary: *fresh,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast, Tail: *tail, NoUserHistory: *noUser, FreshSummary: *fresh, TwoPart: *twoPart,
 	})
 	s := eval.SummarizeTrials(*arm, results)
 	b, _ := json.MarshalIndent(s, "", "  ")
@@ -384,4 +387,34 @@ func evalHandoffs(args []string) error {
 	steps, err := eval.BuildHandoffs(context.Background(), *session, *out, *format, extra)
 	fmt.Printf("%d handoff summaries in %s\n", len(steps), *out)
 	return err
+}
+
+func evalTwoPart(args []string) error {
+	fs := flag.NewFlagSet("eval two-part", flag.ExitOnError)
+	in := fs.String("in", "", "comma-separated trial sets: build up to each Codex thread's latest cutoff")
+	window := fs.Int("window", 150000, "characters before each compaction the Now part is written from")
+	workers := fs.Int("workers", 4, "parallel Now parts")
+	fs.Parse(args)
+	if *in == "" {
+		return errors.New("eval two-part: want --in")
+	}
+	var trials []eval.Trial
+	for _, p := range strings.Split(*in, ",") {
+		ts, err := eval.ReadTrials(strings.TrimSpace(p))
+		if err != nil {
+			return err
+		}
+		trials = append(trials, ts...)
+	}
+	until, nowAt, err := eval.TwoPartCutoffs(trials)
+	if err != nil {
+		return err
+	}
+	for session, u := range until {
+		fmt.Printf("session %s: ledger through %s, %d Now parts\n", session, u.Format(time.RFC3339), len(nowAt[session]))
+		if err := eval.BuildTwoPart(context.Background(), session, u, nowAt[session], *window, *workers); err != nil {
+			return fmt.Errorf("%s: %w", session, err)
+		}
+	}
+	return nil
 }
