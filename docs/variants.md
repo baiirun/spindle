@@ -33,6 +33,7 @@ Every variant is a mix of these.
 | **Chained summary** | A summary rewritten at each of the 48 real compaction points from the previous summary plus the conversation since. Prompts: Codex fallback, Claude-style 9 sections, spindle working state, Droid adaptive. | `spin eval handoffs --format codex\|claude\|state\|droid` |
 | **Memory v1 / v2** | `spin dream` folds episodes into a project memory, rewritten whole at each step. v2 adds "current rules and decisions", max 6 threads, a code-built history index. | `internal/dream` |
 | **Memory v3** | Same fold, but the model emits add / replace / drop edits and code applies them, each citing its source. Sections: current rules and decisions (value, why, who decided, what it replaced), active threads, recently changed, history. | `internal/dream/ops.go` |
+| **Two-part summary** | Now (fresh at each compaction, latest exchange copied verbatim, next step, open questions) + ledger (chained add / replace / drop edits applied by code: decisions, tried or rejected, preferences). Cached. | `spin eval two-part`, `--two-part` |
 | **Episodes / raw** | Searchable episode summaries of ~40k-character chunks, or the raw transcript, via `spin` tools. | `ArmEpisodes`, `ArmRaw` |
 | **Native** | Reopen the real Codex thread cut at the cutoff, with its own compaction (user messages + encrypted summary + tail), no tools. The benchmark. | `ArmNative` |
 
@@ -64,6 +65,7 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 | Tail + fresh summary + v3 | | | 0.83 | extra stale context hurts |
 | **User + tail + fresh summary** | 0.64 (3 runs, 0.63–0.65) | 0.48 (3, 0.45–0.50) | **0.87** (3, 0.85–0.89) | about native on all three threads; aetherflow 0.65 (3, 0.53–0.79); current best |
 | User + tail + v3 | 0.65 (2) | 0.49 (2) | | ties the fresh summary on Eldspire, with more stale answers and 10k more tokens |
+| **User + tail + two-part summary** | 0.67 (3, 0.63–0.71) | **0.55** (3, 0.49–0.60) | **0.93** (3, 0.88–0.95) | ahead of the fresh summary on all four sets by 0.03–0.07 (each about one standard error); aetherflow 0.71 (3, 0.69–0.76); new best, but the ledger half overflowed (see below) |
 
 ## What we learned
 
@@ -78,6 +80,10 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 5. **Code-applied edits stop silent loss but not stale entries.** v3 grew steadily with no collapse, but kept a
    Shadowdark damage-dice rule after it was dropped, because the model never emitted the replace.
 6. **Decisions alone aren't the product.** A compaction summary is a continuation prompt; decisions are one part of it.
+7. **The two-part summary helps, but mostly through its Now half.** It beat the fresh summary on every set. Its
+   ledger hit the size cap by compaction 9–13 and code eviction then decided what stayed: by the end the Eldspire
+   ledger held only decisions from the last few days, and chimi's filled with progress notes that pushed out core
+   language decisions. The model almost never drops entries itself (2 drops in 123 compactions).
 
 ## How other agents compact (checked in source or 2026 docs)
 
@@ -91,7 +97,7 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 
 None of them track what replaced what, or why a decision changed.
 
-## Proposed design (agreed with Byron 2026-09-28, not yet tested)
+## Proposed design (agreed with Byron 2026-09-28; first test in `results.md`)
 
 What a picked-up coordinator gets, in order:
 
@@ -119,9 +125,14 @@ the opposite. The ledger is v3 narrowed to one part of the summary.
 Open risks: the ledger can still keep a replaced rule if the model misses the change; user messages grow without
 bound, so search over older ones is eventually needed.
 
+Tested 2026-09-28: ahead of the fresh summary on all three threads (chimi 0.93, aetherflow 0.71, Eldspire pick-ups
+0.55, recall 0.67). But the ledger overflowed its 16–20k budget early on every long thread, so it behaved as a
+recent-decisions list, not a record of everything decided. Known fixes: keep progress and open questions out of the
+ledger, and replace silent eviction with an explicit merge-or-drop step.
+
 ## In flight / next
 
-- Done 2026-09-28: fresh summaries are cached so reruns reuse them. Repeat runs and aetherflow are in `results.md`:
-  the chimi 0.95 did not hold up (0.84 over three runs), and on Eldspire the fresh summary and memory v3 tie.
-- Next (waiting for Byron): build the two-part continuation summary and test it against user + tail + fresh summary
-  on chimi, aetherflow and Eldspire, 3 runs each.
+- Done 2026-09-28: two-part continuation summary built (`internal/eval/twopart.go`) and tested, 3 runs on each set.
+  Results in `results.md`.
+- Next (waiting for Byron): a Now-only run, to see how much the ledger adds; then fix the ledger's overflow (no
+  progress entries, explicit merge-or-drop instead of eviction) and rerun.

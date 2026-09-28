@@ -2,6 +2,75 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — two-part continuation summary
+
+**Why.** `variants.md` proposed splitting the compaction summary in two: a **Now** part rewritten fresh at every
+compaction (fresh rewrites are good at the current state) and a **Ledger** carried forward and changed only by edits
+that code applies (code-applied edits don't silently lose old state). This round tests it against the current best.
+
+**What was built** (`internal/eval/twopart.go`, `spin eval two-part`, `spin eval trials --two-part`):
+- **Now**, written at each real compaction from the preceding 150k characters (the fresh-summary window): the latest
+  user message and the assistant's last reply, copied verbatim by code; where the work stands; the exact next step;
+  open questions and what we're waiting on. Every line cites item IDs. Budget 6k characters (actual 1.1–3.6k). Droid's
+  adaptive-prompt rules are kept. The model sometimes returned a cut-off Now part; the builder retries until all
+  sections are present.
+- **Ledger**, chained across every real compaction up to each case's cutoff: the model returns add / replace / drop
+  edits (memory v3's mechanism) for decisions in force (what, why, who decided with the user's approving words, what
+  it replaced), tried or rejected, and standing preferences. Code applies them, drops citations that aren't in the
+  conversation, and records the old text on replace. Budget: the model is told 16k characters; above 20k, code evicts
+  the least recently touched entries.
+- Both parts are cached (`data/eval/two-part-cache`, gitignored), so every run reads the same summary. They go in the
+  same slot as the fresh summary, so the only change from the current best is the summary.
+
+**Setups.** New: user messages + recent tail + two-part summary. Current best: user messages + recent tail + fresh
+summary (the three cached runs from the previous round, reused). 3 runs each; mean of per-run means, range across runs.
+"Paired" is the new setup minus the current best on the same cases, averaged over runs (± standard error).
+
+| Thread | Setup | Mean | Range | Pitfalls repeated/run | Tokens | Paired |
+|---|---|---|---|---|---|---|
+| chimi pick-ups (10) | **two-part** | **0.93** | 0.88–0.95 | 0 | 40k | +0.05 ± 0.06 (6 better, 2 worse) |
+| | fresh summary | 0.87 | 0.85–0.89 | 0 | 38k | |
+| aetherflow pick-ups (10) | **two-part** | **0.71** | 0.69–0.76 | 0 | 35k | +0.06 ± 0.06 (6 better, 2 worse) |
+| | fresh summary | 0.65 | 0.53–0.79 | 0 | 31k | |
+| Eldspire pick-ups (10) | **two-part** | **0.55** | 0.49–0.60 | 1.0 | 104k | +0.07 ± 0.05 (6 better, 3 worse) |
+| | fresh summary | 0.48 | 0.45–0.50 | 0.3 | 100k | |
+| Eldspire recall (30) | two-part | 0.67 | 0.63–0.71 | 2.7 | 125k | +0.03 ± 0.03 (11 better, 13 worse) |
+| | fresh summary | 0.64 | 0.63–0.65 | 1.7 | 120k | |
+
+Native Codex for reference (1 run each): chimi 0.96, aetherflow 0.58, Eldspire pick-ups 0.51, recall 0.65.
+
+**Ledger across compactions.**
+
+| Thread | Compactions | Entries (early → end) | Characters at end | Replaced | Dropped by the model | Evicted by the cap |
+|---|---|---|---|---|---|---|
+| chimi | 45 | 6 at step 2 → 35 by step 11, then ~32 | 17.4k | 21 | 1 | 53 |
+| aetherflow | 30 | 3 → 41 | 17.9k | 13 | 1 | 3 |
+| Eldspire | 48 | 9 at step 1 → 38 by step 13, then ~31–41 | 17.7k | 20 | 0 | 111 |
+
+**Reading.**
+- **The two-part summary is ahead on every set, by 0.03–0.07.** Each gap is about one standard error, so no single
+  set settles it, but all four point the same way, the chimi and aetherflow runs are steadier than before, and the
+  cost is 2–5k more tokens. Eldspire pick-ups (0.55) is now above native's single run (0.51); chimi (0.93) is close
+  to native's 0.96.
+- **The ledger is not doing what it was designed to do.** It reached its cap by compaction 9 on chimi and 13 on
+  Eldspire, and from then on code eviction, not the model, decided what stayed. The model almost never drops an entry
+  (2 drops in 123 compactions). By the end of Eldspire every entry was from Aug 4 or later: the ledger had become a
+  "recent decisions" list, and old decisions survive only through the user's messages. On chimi it filled with
+  progress entries ("M4 progress: …", "M2 is complete…") that belong in Now, and these pushed out core language
+  decisions (effects and dependencies, expression syntax, the function execution model).
+- **So the gain probably comes from the Now part and from recent decisions**, not from long-term tracking. The
+  Now part names the next step and the waiting-on items explicitly and quotes the latest exchange, which the adaptive
+  summary sometimes left implicit.
+- **Stale entries.** None of the obvious kind: the Shadowdark damage-dice rule that tripped memory v3 is correctly
+  recorded as dropped ("drop player damage dice in favor of fictional positioning") until evicted. Eldspire pick-ups
+  repeated slightly more pitfalls (1.0 vs 0.3 per run), as did recall (2.7 vs 1.7); with 10–30 cases this is a few
+  answers, but it's the same direction v3 showed and is worth reading case by case before building on the ledger.
+  Some entries are misfiled: an open question ("the Wayfinder destination is not yet specified") and assistant-only
+  choices for a design exercise sit under "decisions in force".
+- Fix before relying on the ledger: keep progress out of it (reject entries about milestones or status), give
+  evictions to the model as an explicit "merge or drop" step instead of silent least-recently-used eviction, and
+  measure what a Now-only summary scores, to separate the two parts' contributions.
+
 ## 2026-09-28 — repeat runs with cached summaries, and aetherflow
 
 **Why.** The last round was one run per case, and the fresh summary was regenerated each run, so gaps like chimi's
