@@ -2,6 +2,41 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — pick-up continuation cases, and Factory Droid's compaction
+
+**Pick-up set** (`data/eval/eldspire-pickups-v1.jsonl`, gitignored): 10 real moments in the TTRPG thread where the
+user resumed design work after a 5–50 hour gap. The opener is the user's verbatim message and the agent writes a handoff
+brief. The checklist says what the continuation needed (3–5 items, cited before the cutoff); the user's later
+corrections are pitfalls. OSC 4, Eldspire 6; Jul 10 to Aug 6.
+
+**Droid arms.** `spin eval handoffs --format droid` chains Factory Droid 0.228's adaptive compaction prompt (feature
+flag `AdaptiveCompactionPrompt`, taken from the binary) at the thread's 48 compaction points. `droid` is that summary
+plus the verbatim turns since it, with no separate user-message history, which is Droid's shape; `user + droid` adds all
+user messages. The v3 memory was rebuilt with steps cut at every pick-up and probe time.
+
+| Arm | Pick-ups (10), 1 sample | Recall probes (30) |
+|---|---|---|
+| native | 0.51 | 0.65 (1 sample) |
+| user | **0.57** | 0.61 (2) |
+| user + memory v3 | 0.44 | **0.67** (2; runs 0.69, 0.66) |
+| droid-style | 0.25 | 0.18 (1) |
+| user + droid summary | 0.56 | 0.62 (1) |
+
+Paired, pick-ups: user − native +0.07 (SE 0.07); user + v3 − user −0.13 (SE 0.06); droid-style − native −0.26 (SE 0.07).
+Probes: user + v3 − native +0.02 (SE 0.04); droid-style − native −0.47 (SE 0.06).
+
+**Reading.**
+- **The user's verbatim messages are the workhorse.** They match or beat native on both sets with 25–30% fewer tokens.
+- **Summary-only memory collapses.** The chained adaptive summaries (1.4k–10k characters, swinging from step to step)
+  lose most old state: 0.25 and 0.18. This uses our reader model at low effort; Droid in production uses stronger models
+  and a ~40k-token recent tail, so treat this as a lower bound. The direction matches the snapshot collapse.
+- **Memory v3 helps recall but hurts pick-ups** (−0.13, about 2 SE). In k-007 it asserted Shadowdark damage dice,
+  which were dropped on Jul 24: the fold kept a stale rule because the model never emitted the supersede edit.
+  Code-applied edits prevent silent loss, not stale entries. Its 0.69 recall edge over native is within noise after the
+  second sample (0.67 average).
+- Next: audit v3's current-rules section for stale entries against the probe gold, and make supersession explicit in
+  the fold.
+
 ## 2026-09-27 — the user's own words: what native Codex actually remembers
 
 **Finding.** Codex compaction (`type: compacted` in the rollout) replaces history with **every user message

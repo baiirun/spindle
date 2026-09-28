@@ -203,11 +203,11 @@ func evalTrials(args []string) error {
 	memoryDir := fs.String("memory", "", "memory and user-memory/user-handoff arms: directory holding steps.json")
 	userLast := fs.Int("user-last", 0, "user arms: keep only the user's last N messages (0 = all)")
 	fs.Parse(args)
-	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff) && *memoryDir == "" {
+	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
 		return fmt.Errorf("--arm %s needs --memory", *arm)
 	}
 	switch *arm {
-	case eval.ArmMemory, eval.ArmMemoryAgent, eval.ArmRaw, eval.ArmEpisodes, eval.ArmNative, eval.ArmCold, eval.ArmUser, eval.ArmUserMemory, eval.ArmUserHandoff:
+	case eval.ArmMemory, eval.ArmMemoryAgent, eval.ArmRaw, eval.ArmEpisodes, eval.ArmNative, eval.ArmCold, eval.ArmUser, eval.ArmUserMemory, eval.ArmUserHandoff, eval.ArmHandoff:
 	default:
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
@@ -357,7 +357,7 @@ func evalHandoffs(args []string) error {
 	fs := flag.NewFlagSet("eval handoffs", flag.ExitOnError)
 	session := fs.String("session", "", "Codex session whose compaction points to reproduce")
 	out := fs.String("out", "", "output directory (steps.json + steps/)")
-	format := fs.String("format", "codex", "codex | claude | state")
+	format := fs.String("format", "codex", "codex | claude | state | droid")
 	cutsFrom := fs.String("cuts-from", "", "trial set: also snapshot just before each distinct asked_at")
 	fs.Parse(args)
 	if *session == "" || *out == "" {

@@ -25,6 +25,7 @@ const (
 	ArmUser        = "user"
 	ArmUserMemory  = "user-memory"
 	ArmUserHandoff = "user-handoff"
+	ArmHandoff     = "handoff" // summary + turns since it, without the full user-message history (Factory Droid's shape)
 )
 
 // codexCompactPrompt is Codex CLI's local (non-remote) compaction prompt, as
@@ -87,7 +88,7 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 		extra = fmt.Sprintf("\n\n<project_memory as_of=%q>\n%s\n</project_memory>\n\nThe project memory is a fold of the whole "+
 			"conversation (both sides) through its date. Treat it as the authority on current rules and decisions; use the\n"+
 			"user's messages for their reasons and for anything after the memory's date.", r.MemoryAsOf, text)
-	case ArmUserHandoff:
+	case ArmUserHandoff, ArmHandoff:
 		text, step, err := memorySnapshot(o.MemoryDir, t)
 		if err != nil {
 			return err
@@ -100,6 +101,9 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	}
 	msgs := renderItems(s, time.Time{}, t.AskedAt, corpus.RoleUser)
 	which := "all of the user's own messages in\nthis conversation so far"
+	if o.Arm == ArmHandoff {
+		return handoffOnlyBrief(ctx, o, t, r, extra)
+	}
 	if o.UserLast > 0 {
 		msgs = lastUserItems(s, t.AskedAt, o.UserLast)
 		which = fmt.Sprintf("the user's most recent %d messages in\nthis conversation (older ones are not included)", o.UserLast)
@@ -124,6 +128,24 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 			r.OtherCalls = append(r.OtherCalls, ev.Item.Command)
 		}
 	}
+	return err
+}
+
+// handoffOnlyBrief answers from the compaction summary and the verbatim turns
+// since it, as a compacting agent would, with no separate user-message history.
+func handoffOnlyBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult, context string) error {
+	work := filepath.Join(o.ScratchDir, t.ID, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(filepath.Join(o.ScratchDir, t.ID))
+	system := fmt.Sprintf("You are continuing a long-running project conversation whose earlier context was compacted. You have the\n"+
+		"compaction summary and the verbatim turns since it.\n\nUse only this context. Do not run commands or read files; your only job is to %s.\n%s",
+		trialJob(t), finalInstruction(t))
+	started := time.Now()
+	res, err := llm.Run(ctx, llm.Request{Model: llm.Reader, Dir: work, Timeout: 10 * time.Minute, System: system, Prompt: strings.TrimSpace(context) + "\n\n" + trialUserTurn(t)})
+	r.Brief, r.ToolCalls, r.DurationMS = res.Text, res.ToolCalls, time.Since(started).Milliseconds()
+	r.InputTokens, r.OutputTokens = res.InputTokens, res.OutputTokens
 	return err
 }
 
@@ -196,8 +218,20 @@ append a history. Sections:
 4. Next steps.
 Keep separate projects or games in the same conversation clearly separated. Be complete on section 1; be brief elsewhere.`
 
+// droidAdaptivePrompt is Factory Droid's adaptive compaction prompt (feature
+// flag AdaptiveCompactionPrompt in droid 0.228), in its update-a-previous-summary form.
+const droidAdaptivePrompt = `Summarize this conversation or agent trajectory so the assistant can continue effectively after compaction.
+You've previously produced a summary of the session up to a certain point. There have been new messages since then. You must update the summary to cover these messages, adhering to the guidelines provided below.
+Choose the sections and level of detail that fit this session. Organize around what matters for continuation, not a chronological account of tool calls.
+Favor a thorough, complete summary. Use your judgment to prioritize the material and allocate detail where it helps most. Do not omit useful context merely to keep the summary short.
+Always preserve relevant user context: the primary request and intent, the latest request, consequential requirements, clarifications, preferences, approvals and their limits, corrections, and unanswered questions. Distinguish user decisions from assistant proposals or assumptions.
+Preserve other context according to its value for continuing the work. This may include current line of investigation, important discoveries and reasoning, decisions, outstanding delegated work, unresolved findings, and immediate next actions. Keep identifiers and locations needed to act on that context.
+Project files, recorded evidence, and other relevant artifacts may already be durable sources of truth. Prefer referencing these sources while preserving important context that exists only in the conversation.
+When updating a previous summary, integrate new information, replace superseded state, and remove details that no longer help continuation. Do not turn proposals into commitments, reports into verified results, partial checks into verified correctness, or historical evidence into current proof.
+Return the summary inside <summary> tags.`
+
 // SnapshotPrompts are the chained snapshot formats BuildHandoffs can write.
-var SnapshotPrompts = map[string]string{"codex": codexCompactPrompt, "claude": claudeCompactPrompt, "state": stateSnapshotPrompt}
+var SnapshotPrompts = map[string]string{"codex": codexCompactPrompt, "claude": claudeCompactPrompt, "state": stateSnapshotPrompt, "droid": droidAdaptivePrompt}
 
 // BuildHandoffs writes a chained summary at each of the real thread's
 // compaction points plus any extra cuts: summary n folds summary n-1 plus the
@@ -238,6 +272,9 @@ func BuildHandoffs(ctx context.Context, session, outDir, format string, extra []
 			return steps, fmt.Errorf("handoff %d: %w", i+1, err)
 		}
 		prev = strings.TrimSpace(res.Text)
+		if i := strings.Index(prev, "<summary>"); i >= 0 {
+			prev = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(prev[i+len("<summary>"):]), "</summary>"))
+		}
 		p := filepath.Join(outDir, "steps", fmt.Sprintf("%03d.md", i+1))
 		if err := os.WriteFile(p, []byte(prev+"\n"), 0o644); err != nil {
 			return steps, err

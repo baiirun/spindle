@@ -117,7 +117,7 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 		err = memoryBrief(o, t, &r)
 	case ArmMemoryAgent:
 		err = memoryAgentBrief(ctx, o, t, &r)
-	case ArmUser, ArmUserMemory, ArmUserHandoff:
+	case ArmUser, ArmUserMemory, ArmUserHandoff, ArmHandoff:
 		err = userBrief(ctx, o, t, &r)
 	default:
 		err = spinBrief(ctx, o, t, &r)
