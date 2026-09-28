@@ -18,11 +18,13 @@ import (
 
 func runEval(args []string) error {
 	if len(args) < 1 {
-		return errors.New("eval: want mine | label | run | report | continue | trials | trials-mine | trials-label | trials-split | trials-verify | trials-openers")
+		return errors.New("eval: want mine | label | run | report | continue | trials | handoffs | trials-mine | trials-label | trials-split | trials-verify | trials-openers")
 	}
 	switch args[0] {
 	case "trials":
 		return evalTrials(args[1:])
+	case "handoffs":
+		return evalHandoffs(args[1:])
 	case "trials-mine":
 		return evalTrialsMine(args[1:])
 	case "trials-openers":
@@ -194,16 +196,19 @@ func evalTrials(args []string) error {
 	corpusRoot := fs.String("corpus", roots.Corpus, "corpus root")
 	episodes := fs.String("episodes", roots.Episodes, "episode root")
 	in := fs.String("in", "data/eval/continuation-v0.jsonl", "trial set")
-	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread) | cold (no history) | memory (project memory alone) | memory-agent")
+	arm := fs.String("arm", eval.ArmEpisodes, "raw | episodes | native (resume the real Codex thread) | cold (no history) | memory (project memory alone) | memory-agent | user (the user's messages alone) | user-memory | user-handoff")
 	only := fs.String("only", "", "comma-separated trial IDs (default: all)")
 	workers := fs.Int("workers", 3, "parallel trials")
 	tag := fs.String("tag", "", "label for this run")
-	memoryDir := fs.String("memory", "", "memory arms: dream output directory holding steps.json")
+	memoryDir := fs.String("memory", "", "memory and user-memory/user-handoff arms: directory holding steps.json")
+	userLast := fs.Int("user-last", 0, "user arms: keep only the user's last N messages (0 = all)")
 	fs.Parse(args)
-	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent) && *memoryDir == "" {
+	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff) && *memoryDir == "" {
 		return fmt.Errorf("--arm %s needs --memory", *arm)
 	}
-	if *arm != eval.ArmMemory && *arm != eval.ArmMemoryAgent && *arm != eval.ArmRaw && *arm != eval.ArmEpisodes && *arm != eval.ArmNative && *arm != eval.ArmCold {
+	switch *arm {
+	case eval.ArmMemory, eval.ArmMemoryAgent, eval.ArmRaw, eval.ArmEpisodes, eval.ArmNative, eval.ArmCold, eval.ArmUser, eval.ArmUserMemory, eval.ArmUserHandoff:
+	default:
 		return fmt.Errorf("unknown arm %q", *arm)
 	}
 	trials, err := eval.ReadTrials(*in)
@@ -251,7 +256,7 @@ func evalTrials(args []string) error {
 	}
 	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
 		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
-		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast,
 	})
 	s := eval.SummarizeTrials(*arm, results)
 	b, _ := json.MarshalIndent(s, "", "  ")
@@ -346,4 +351,34 @@ func evalTrialsOpeners(args []string) error {
 	}
 	fmt.Printf("replayed %d trials as new sessions: %v, %d openers name checklist identifiers → %s, review %s\n", len(nt), kinds, leaks, *out, *review)
 	return eval.WriteTrials(*out, nt)
+}
+
+func evalHandoffs(args []string) error {
+	fs := flag.NewFlagSet("eval handoffs", flag.ExitOnError)
+	session := fs.String("session", "", "Codex session whose compaction points to reproduce")
+	out := fs.String("out", "", "output directory (steps.json + steps/)")
+	format := fs.String("format", "codex", "codex | claude | state")
+	cutsFrom := fs.String("cuts-from", "", "trial set: also snapshot just before each distinct asked_at")
+	fs.Parse(args)
+	if *session == "" || *out == "" {
+		return errors.New("eval handoffs: want --session and --out")
+	}
+	var extra []time.Time
+	if *cutsFrom != "" {
+		trials, err := eval.ReadTrials(*cutsFrom)
+		if err != nil {
+			return err
+		}
+		seen := map[time.Time]bool{}
+		for _, t := range trials {
+			c := t.AskedAt.Add(-time.Second) // AsOf is strict: the snapshot must precede the question
+			if !seen[c] {
+				seen[c] = true
+				extra = append(extra, c)
+			}
+		}
+	}
+	steps, err := eval.BuildHandoffs(context.Background(), *session, *out, *format, extra)
+	fmt.Printf("%d handoff summaries in %s\n", len(steps), *out)
+	return err
 }

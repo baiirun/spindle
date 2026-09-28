@@ -2,7 +2,72 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
-## 2026-09-27 — delayed and currency recall probes on the Eldspire TTRPG log
+## 2026-09-27 — the user's own words: what native Codex actually remembers
+
+**Finding.** Codex compaction (`type: compacted` in the rollout) replaces history with **every user message
+verbatim** (1,947 messages, about 230k characters at the last compaction), one encrypted `compaction` item of about 7k
+characters, and the app's developer instructions. The kept history grows at each of the thread's 48 compactions; user
+messages are never dropped. Only the assistant's side is summarized.
+
+**Arms** (same 30 probes; no tools; `internal/eval/userarm.go`):
+- `user`: all of the user's messages before the cutoff, verbatim.
+- `user-memory`: the same plus the memory v2 snapshot, which the prompt marks as authoritative for current rules.
+- `user-handoff`: the same plus a chained handoff summary made with Codex CLI's public fallback compaction prompt
+  at each real compaction point (`spin eval handoffs`; the summaries are about 2k characters each), plus the verbatim
+  turns since the last compaction.
+
+| Arm | Samples | All | Changed | Current | Why | Tried | Rejected | Contradicted | Pitfalls/sample | Tokens |
+|---|---|---|---|---|---|---|---|---|---|---|
+| native | 1 | 0.65 | 0.51 | 0.67 | 0.86 | 0.62 | 0.66 | 3% | 3 | 165k |
+| user | 2 | 0.61 | 0.50 | 0.45 | 0.85 | 0.73 | 0.65 | 10% | 5 | 113k |
+| user-memory | 2 | 0.64 | 0.54 | 0.71 | 0.80 | 0.61 | 0.50 | 12% | 4.5 | 126k |
+| user-handoff | 2 | 0.61 | 0.56 | 0.59 | 0.71 | 0.58 | 0.62 | 7% | 2 | 126k |
+
+Paired against native: user −0.04 (SE 0.05), user-memory −0.02 (SE 0.04), user-handoff −0.05 (SE 0.04).
+Against user: memory +0.03, handoff 0.00.
+
+**Reading.**
+- **Native's recall is almost entirely the user's own words.** The user's messages alone match native within noise,
+  including "why" (0.85 vs 0.86), with 30% fewer tokens.
+- **Neither summary adds much on average.** The memory lifts "current" (0.45 → 0.71) but costs "rejected"; the
+  handoff summary halves repeated pitfalls. Both are within noise overall.
+- **Currency is unsolved everywhere** (0.50–0.56 on "changed"). The misses are agent proposals the user accepted with
+  "ok let's try it": the user's side alone can't say what was accepted, and the summaries blur it. Memory v2 alone
+  (0.61 on "changed") is still the best at this.
+
+**Follow-up: snapshots written right at the cutoff** (chained through the 48 compaction points plus the 6 cutoffs,
+one second before each question; 2 samples each):
+
+| Arm | All | Changed | Current | Why | Tried | Rejected | Pitfalls/sample |
+|---|---|---|---|---|---|---|---|
+| user + Claude-style compaction summary | 0.61 | 0.52 | 0.57 | 0.76 | 0.60 | 0.66 | 3 |
+| user + spindle working-state snapshot | 0.64 | 0.60 | 0.45 | 0.83 | 0.72 | 0.68 | 2 |
+
+Neither beats the user's messages alone by more than noise (+0.00 and +0.03). **This is not a valid ceiling:** the
+chained snapshots forget. Each step is a full model rewrite, and old state falls out. The working-state snapshot
+collapsed to 367 characters at one step, and at the Aug 6 cutoff it held only the latest few days of work, with no Push
+or Tag Team rules at all. Freshness doesn't help when every rewrite can drop old content. The snapshot needs
+code-enforced persistence (the model emits edits, code applies them: the dream v3 direction), not a better prompt.
+
+**Follow-up: dream v3 (edit operations applied by code).** One fold, batch 10 with steps cut at the 6 probe times
+(17 steps), 0 unresolved citations. The memory grows steadily from 8k to 26k characters with no collapse. Then user
+messages + v3 on the 30 probes, 1 sample:
+
+| Arm | Samples | All | Changed | Current | Why | Tried | Rejected | Pitfalls/sample | Tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| native | 1 | 0.65 | 0.51 | 0.67 | 0.86 | 0.62 | 0.66 | 3 | 165k |
+| user | 2 | 0.61 | 0.50 | 0.45 | 0.85 | 0.73 | 0.65 | 5 | 113k |
+| user + memory v2 | 2 | 0.64 | 0.54 | 0.71 | 0.80 | 0.61 | 0.50 | 4.5 | 126k |
+| **user + memory v3** | 1 | **0.69** | 0.59 | 0.65 | 0.86 | 0.62 | **0.75** | **2** | 126k |
+
+Paired: v3 − native +0.03 (SE 0.05), v3 − user +0.08 (SE 0.05), v3 − v2 +0.05 (SE 0.05). It is the first arm
+above native, but with one sample that is not established. It gains on the accepted-proposal misses: push 0.67 (native
+0.17) and tag team 0.50 (native 0).
+
+**Follow-up: only the user's last 40 messages + memory v3** (`--user-last 40`, 1 sample): **0.33** (changed 0.36,
+current 0.24, why 0.50, tried 0.33, rejected 0.19; 13% contradicted; 6 pitfalls repeated; 33k tokens). That is −0.35
+(SE 0.07) against all messages + v3. A recent window cannot stand in for the user's message history: the fold carries
+the current state only when the user's own words are there to anchor and explain it.
 
 **Setup.** A new set of 30 hand-vetted probes (`data/eval/eldspire-probes-v1.jsonl`, gitignored like the rest of
 `data/`) on the TTRPG log thread (`019e85fe`). A fresh coordinator starts at one of six late cutoffs (Aug 1 to Aug 7),

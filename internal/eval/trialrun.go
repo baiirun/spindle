@@ -35,6 +35,7 @@ type TrialRunOptions struct {
 	RunDir      string
 	ScratchDir  string // snapshots live here; removed per trial
 	MemoryDir   string // memory arms: a dream output directory with steps.json
+	UserLast    int    // user arms: keep only the user's last N messages (0 = all)
 	Workers     int
 }
 
@@ -116,6 +117,8 @@ func runTrial(ctx context.Context, o TrialRunOptions, t Trial) (TrialResult, err
 		err = memoryBrief(o, t, &r)
 	case ArmMemoryAgent:
 		err = memoryAgentBrief(ctx, o, t, &r)
+	case ArmUser, ArmUserMemory, ArmUserHandoff:
+		err = userBrief(ctx, o, t, &r)
 	default:
 		err = spinBrief(ctx, o, t, &r)
 	}
@@ -154,7 +157,7 @@ func trialSystem(t Trial, bin, corpusRoot, episodes string) string {
 	q := shellQuote
 	roots := fmt.Sprintf("--corpus %s --episodes %s", q(corpusRoot), q(episodes))
 	var start string
-	if (t.Mode == "resume" || t.Mode == "recall") && len(t.Prior) > 0 {
+	if !isWake(t) && len(t.Prior) > 0 {
 		var cmds []string
 		for _, h := range t.Prior {
 			source, session, _ := strings.Cut(h, ":")
@@ -325,7 +328,7 @@ func mentionsPrior(t Trial, text string) bool {
 }
 
 func trialJob(t Trial) string {
-	if t.Mode == "recall" {
+	if isRecall(t) {
 		return "answer the user's question about earlier work"
 	}
 	return "write the handoff brief you would need to continue the work"
@@ -334,7 +337,7 @@ func trialJob(t Trial) string {
 // finalInstruction says what the agent must produce: a handoff brief, or for a
 // recall trial, a direct answer to the user's question.
 func finalInstruction(t Trial) string {
-	if t.Mode == "recall" {
+	if isRecall(t) {
 		return "Answer the user's question directly and specifically, as of the time given. Say who decided\n" +
 			"anything you report (the user, or the agent without the user's agreement), and cite transcript item IDs."
 	}
@@ -345,10 +348,10 @@ func finalInstruction(t Trial) string {
 // session, so the task is the user's opening message rather than a description.
 func trialUserTurn(t Trial) string {
 	when := t.AskedAt.Format("2006-01-02 15:04 MST")
-	if t.Mode == "recall" {
+	if isRecall(t) {
 		return fmt.Sprintf("It is %s. The user asks:\n\n%s", when, t.Task)
 	}
-	if t.Mode == "wake" {
+	if isWake(t) {
 		return fmt.Sprintf("It is %s. The user opens a new session with:\n\n%s\n\nBefore doing anything, write the handoff brief you'd need to continue this work.", when, t.Task)
 	}
 	return fmt.Sprintf("It is %s. The work you are picking up:\n\n%s\n\nWrite the handoff brief you'd need to continue it.", when, t.Task)
@@ -360,3 +363,9 @@ func withPreface(preface, system string) string {
 	}
 	return system + "\n\n" + preface
 }
+
+// Trial modes: resume (handle given, write a brief), wake (brand-new session,
+// find the context), recall (handle given, answer a question) and wake-recall
+// (brand-new session, answer a question).
+func isRecall(t Trial) bool { return t.Mode == "recall" || t.Mode == "wake-recall" }
+func isWake(t Trial) bool   { return t.Mode == "wake" || t.Mode == "wake-recall" }
