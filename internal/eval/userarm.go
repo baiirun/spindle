@@ -191,11 +191,42 @@ func recentTail(s corpus.Session, t Trial) (string, time.Time, error) {
 // before the cutoff, from the preceding window of both sides of the
 // conversation (up to maxChars), with Droid's adaptive prompt. Unlike the
 // chained handoffs, it is written fresh, as a compacting agent sees its context.
+//
+// Summaries are cached per session, compaction and window size under
+// freshSummaryCache, so every run of a case reads the same summary and reruns
+// measure the reader, not summary regeneration.
 func freshSummary(ctx context.Context, s corpus.Session, t Trial, maxChars int) (string, error) {
 	_, since, err := recentTail(s, t)
 	if err != nil {
 		return "", err
 	}
+	cache := filepath.Join(freshSummaryCache, fmt.Sprintf("%s-%d-%d.md", NativePrior(t), since.Unix(), maxChars))
+	if b, err := os.ReadFile(cache); err == nil {
+		return string(b), nil
+	}
+	out, err := writeFreshSummary(ctx, s, since, maxChars)
+	if err != nil {
+		return "", err
+	}
+	// Link, not rename: if a concurrent run cached this summary first, keep and
+	// use theirs so all runs agree.
+	if err := os.MkdirAll(freshSummaryCache, 0o755); err != nil {
+		return "", err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", cache, os.Getpid())
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp)
+	_ = os.Link(tmp, cache)
+	b, err := os.ReadFile(cache)
+	return string(b), err
+}
+
+// freshSummaryCache holds cached fresh summaries (gitignored with the rest of data/).
+const freshSummaryCache = "data/eval/fresh-summary-cache"
+
+func writeFreshSummary(ctx context.Context, s corpus.Session, since time.Time, maxChars int) (string, error) {
 	window := renderItems(s, time.Time{}, since, corpus.RoleUser, corpus.RoleAssistant)
 	if len(window) > maxChars {
 		window = window[len(window)-maxChars:]
