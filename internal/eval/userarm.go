@@ -142,8 +142,8 @@ func userBrief(ctx context.Context, o TrialRunOptions, t Trial, r *TrialResult) 
 	defer os.RemoveAll(filepath.Join(o.ScratchDir, t.ID))
 	rules := "Use only this context. Do not run commands or read files; your only job is to %s.\n%s"
 	// Before the first compaction the whole conversation is in the tail and there is no record yet.
-	if _, since, err := recentTail(s, t); err == nil && !since.IsZero() && o.TwoPart && o.TwoPartLedger == "record" {
-		p, err := RecordPath(t)
+	if _, since, err := recentTail(s, t); err == nil && !since.IsZero() && o.TwoPart && IsRecord(o.TwoPartLedger) {
+		p, err := RecordPath(t, o.TwoPartLedger)
 		if err != nil {
 			return err
 		}

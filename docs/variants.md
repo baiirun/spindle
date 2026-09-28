@@ -2,7 +2,7 @@
 
 What a fresh or recycled project coordinator is handed so it can continue a long-running thread, every variant
 tried so far, what each scored, and the design we are moving to. Scores and raw tables are in `results.md`; this
-page is the map. Last updated 2026-09-28 (searchable decision record).
+page is the map. Last updated 2026-09-28 (decision record v2).
 
 ## The question
 
@@ -69,6 +69,7 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 | **User + tail + two-part summary** | 0.67 (3, 0.63–0.71) | **0.55** (3, 0.49–0.60) | **0.93** (3, 0.88–0.95) | ahead of the fresh summary on all four sets by 0.03–0.07 (each about one standard error); aetherflow 0.71 (3, 0.69–0.76); new best, but the ledger half overflowed (see below) |
 | User + tail + Now part only | 0.61 (3, 0.57–0.66) | 0.54 (3) | **0.94** (3, 0.88–0.97) | the pick-up gain is all here; aetherflow 0.71; recall falls without a ledger |
 | **User + tail + Now + searchable decision record** | **0.68** (3, 0.65–0.72) | 0.64 (3, 0.52–0.73) | 0.89 (3, 0.85–0.97) | best on Eldspire recall and pick-ups together, fewest stale answers; costs 0.04–0.06 on build threads (aetherflow 0.65) and doubles tokens |
+| User + tail + Now + record v2 (approval gate, supersession check) | 0.61 (3, 0.55–0.64) | 0.53 (3, 0.45–0.64) | 0.91 (3, 0.86–1.00) | loses the record's Eldspire gain: the stricter gate drops decisions approved with a short reply; aetherflow 0.67 |
 | User + tail + two-part, ledger v2 (consolidating) | 0.62 (3) | **0.65** (3, 0.61–0.71) | 0.87 (3) | best Eldspire pick-ups so far, but loses recall and chimi; aetherflow 0.72 |
 
 ## What we learned
@@ -96,6 +97,11 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
    trimmed, the record matched the v1 ledger on Eldspire recall (0.68) and lifted Eldspire pick-ups to 0.64, but
    cost a little on build threads, where the needed state is recent. The model adds entries and almost never
    replaces or drops them (7 replaces in 123 compactions), so stale entries and misfiled proposals accumulate.
+
+10. **A supersession check makes the model revise the record, but a strict approval gate costs more than it saves.**
+    Showing each new decision the same-topic entries got 15 replacements and 63 narrowings. But asking for the
+    user's words made the model skip decisions approved with a short reply ("agree"), so the newest version of a
+    rule was often missing and the old one stayed. Eldspire recall fell from 0.68 to 0.61.
 
 ## How other agents compact (checked in source or 2026 docs)
 
@@ -147,5 +153,7 @@ ledger, and replace silent eviction with an explicit merge-or-drop step.
 - Done 2026-09-28: two-part summary (ledger v1), Now only, and ledger v2, 3 runs each; see `results.md`.
 - Decided 2026-09-28 (Byron): the ledger is for recall, so it's a long, searchable record out of the prompt, and
   the Now part is the whole summary. Tested the same day; see `results.md`.
-- Open, not started: the record rarely updates itself (3 stale entries, 11 misfiled proposals across three
-  threads); build threads lose 0.04–0.06 with search; tokens double. Candidate fixes need Byron's go-ahead.
+- Done 2026-09-28 (Byron chose "Fix it"): record v2 with an approval gate and a supersession check. It revises old
+  entries now, but lost the Eldspire gain by recording fewer approved decisions; see `results.md`.
+- Open, not started: keep the supersession check and loosen the gate so short approvals of a specific proposal
+  still count; build threads still lose a little with search; tokens double. Needs Byron's go-ahead.

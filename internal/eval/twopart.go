@@ -199,8 +199,8 @@ Rules:
 
 // TwoPartSummary returns the cached two-part summary at the trial's last real
 // compaction and when that compaction happened.
-// ledger is "none" (Now only), "v1", "v2", or "record" (Now only in the prompt; the
-// record is searched with spin decisions). Every version reads the same Now parts.
+// ledger is "none" (Now only), "v1", "v2", or "record" / "record2" (Now only in the
+// prompt; the record is searched with spin decisions). Every version reads the same Now parts.
 func TwoPartSummary(s corpus.Session, t Trial, windowChars int, ledger string) (string, time.Time, error) {
 	_, since, err := recentTail(s, t)
 	if err != nil {
@@ -222,7 +222,7 @@ func TwoPartSummary(s corpus.Session, t Trial, windowChars int, ledger string) (
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("two-part summary not built for %s step %d (run spin eval two-part): %w", t.ID, k+1, err)
 	}
-	if ledger == "none" || ledger == "record" { // the record is searched through spin, not shown
+	if ledger == "none" || IsRecord(ledger) { // the record is searched through spin, not shown
 		return "# Now\n\n" + strings.TrimSpace(string(now)), since, nil
 	}
 	l, err := readLedger(ledgerPath(ledgerDir(dir, ledger), k+1))
@@ -369,6 +369,8 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 		system = ledgerSystemV2
 	case "record":
 		system, fieldCap = recordSystem, 0
+	case "record2":
+		system, fieldCap = recordSystemV2, 0
 	}
 	path, err := findCodexRollout(session)
 	if err != nil {
@@ -411,7 +413,7 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 			cur := l.Render()
 			prompt := fmt.Sprintf("<ledger chars=%d budget=%d>\n%s\n</ledger>\n\n<conversation_since>\n%s</conversation_since>",
 				len(cur), ledgerBudget, cur, chunk)
-			if version == "record" {
+			if IsRecord(version) {
 				prompt = fmt.Sprintf("<record entries=%d>\n%s\n</record>\n\n<conversation_since>\n%s</conversation_since>", len(l.Entries), cur, chunk)
 			}
 			req := llm.Request{Model: llm.Reader, System: system, Prompt: prompt, Schema: ledgerSchema, Timeout: 20 * time.Minute}
@@ -419,13 +421,22 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 				return fmt.Errorf("ledger step %d: %w", step, err)
 			}
 			l.Ops += len(out.Ops)
-			l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid, fieldCap)
+			ops := out.Ops
+			if version == "record2" {
+				ops = l.gate(ops, step, userSaid(s, cut))
+			}
+			l.apply(ops, step, cut.UTC().Format("2006-01-02"), valid, fieldCap)
+			if version == "record2" {
+				if err := l.supersede(ctx, ops, step, userSaidBetween(s, from, cut)); err != nil {
+					return fmt.Errorf("ledger step %d: %w", step, err)
+				}
+			}
 			if version == "v2" && len(l.Render()) > ledgerBudget {
 				if err := consolidate(ctx, &l, step, cut, valid); err != nil {
 					return fmt.Errorf("ledger step %d: %w", step, err)
 				}
 			}
-			if version != "record" { // the record is searched, not prompted, so it has no cap
+			if !IsRecord(version) { // the record is searched, not prompted, so it has no cap
 				l.enforceCap(step)
 			}
 		}

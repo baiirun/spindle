@@ -63,7 +63,7 @@ What never goes in the record (the other summary rewrites it every compaction):
 A decision is a choice that constrains future work and would still matter weeks later.`
 
 // RecordPath is the cached decision record as of the trial's last real compaction.
-func RecordPath(t Trial) (string, error) {
+func RecordPath(t Trial, version string) (string, error) {
 	cuts, err := compactionsOf(NativePrior(t))
 	if err != nil {
 		return "", err
@@ -77,7 +77,7 @@ func RecordPath(t Trial) (string, error) {
 	if k < 0 {
 		return "", fmt.Errorf("record: no compaction before %s", t.AskedAt)
 	}
-	return ledgerPath(ledgerDir(filepath.Join(twoPartCache, NativePrior(t)), "record"), k+1), nil
+	return ledgerPath(ledgerDir(filepath.Join(twoPartCache, NativePrior(t)), version), k+1), nil
 }
 
 // RecordHit is one search result.
@@ -220,9 +220,9 @@ type RecordFlag struct {
 // AuditRecord checks the session's last cached record against the user's
 // messages and the last cached Now part. It is a spot check, not a full
 // review: changes that only show in the assistant's turns can be missed.
-func AuditRecord(ctx context.Context, session string) (Ledger, []RecordFlag, error) {
+func AuditRecord(ctx context.Context, session, version string) (Ledger, []RecordFlag, error) {
 	dir := filepath.Join(twoPartCache, session)
-	steps, _ := filepath.Glob(filepath.Join(ledgerDir(dir, "record"), "ledger-*.json"))
+	steps, _ := filepath.Glob(filepath.Join(ledgerDir(dir, version), "ledger-*.json"))
 	nows, _ := filepath.Glob(filepath.Join(dir, "now-*.md"))
 	if len(steps) == 0 || len(nows) == 0 {
 		return Ledger{}, nil, fmt.Errorf("audit %s: record or Now part not built", session)

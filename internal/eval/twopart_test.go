@@ -65,3 +65,21 @@ func TestSearchRecord(t *testing.T) {
 		t.Fatalf("render: %s", out)
 	}
 }
+
+func TestRecordGate(t *testing.T) {
+	said := " " + normQuote("OK, go with the 10-slot inventory. Drop the Pack/Cargo split!") + " |"
+	l := Ledger{Entries: map[string]LedgerEntry{}}
+	kept := l.gate([]ledgerOp{
+		{Op: "add", Kind: "decision", Key: "inventory", Who: "user approved", UserWords: "go with the 10-slot inventory ... drop the pack/cargo split"},
+		{Op: "add", Kind: "decision", Key: "proposal", Who: "assistant", UserWords: ""},
+		{Op: "add", Kind: "decision", Key: "made-up", Who: "user", UserWords: "use hex grids"},
+		{Op: "add", Kind: "tried", Key: "grid", Text: "hex grid"},
+		{Op: "drop", Key: "old"},
+	}, 3, said)
+	if len(kept) != 3 || kept[0].Key != "inventory" || kept[1].Key != "grid" {
+		t.Fatalf("kept %+v", kept)
+	}
+	if len(l.Log) != 2 || l.Log[0].Op != "gated" {
+		t.Fatalf("log %+v", l.Log)
+	}
+}

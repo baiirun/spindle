@@ -2,6 +2,75 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — decision record v2: approval gate and supersession check
+
+**Why.** The first record's audit found the model adds entries and almost never revises old ones (7 replaces, 0
+drops in 123 compactions): 3 outdated entries still stated as current, and 11 open questions or unapproved proposals
+filed as decisions. Byron chose to fix the builder.
+
+**What was built** (`spin eval two-part --ledger record2`, `internal/eval/record2.go`):
+- **Approval gate.** A decision needs who = "user" or "user approved" and the user's own words; a preference needs
+  the user's words. Code checks the quote appears in a user message (case and punctuation ignored, "..." splits
+  pieces) and throws the entry away otherwise, logged as `gated`. The prompt also says open questions, things the
+  user is weighing, and anything asked or pending go under no kind, and that quoting a question isn't approval. A
+  first try let open questions through as "preference" or "tried" entries; those two kinds were tightened and the
+  builds restarted.
+- **Supersession check.** After each step, every new or changed decision or preference is searched against the
+  record (the same search the agent uses, 6 candidates, "tried" entries excluded) and one model call per step, given
+  the candidates and that stretch's user messages, says which candidates it **replaces** (code removes the old entry
+  and the new one records it under "Replaced") or **narrows** (code rewrites the old entry and keeps its old text).
+- Unchanged: no size cap, no eviction, no clipping, citations on every entry. The arm, search and Now parts are the
+  same as the first record's.
+
+**Record at the end of each thread.**
+
+| Thread | Entries (v1 → v2) | Characters | Replaced by the model | Narrowed | Gated by code | "User approved" entries |
+|---|---|---|---|---|---|---|
+| chimi (45 compactions) | 92 → 62 | 55k → 43k | 0 → 2 | 16 | 2 | 59 → 41 |
+| aetherflow (30) | 55 → 31 | 33k → 16k | 2 → 1 | 8 | 1 | 18 → 7 |
+| Eldspire (48) | 146 → 142 | 93k → 101k | 5 → 12 | 39 | 6 | 41 → 20 |
+
+Still 0 drops. The code gate rarely fired (9 entries); most of the change came from the stricter prompt.
+
+**Audit** (`spin eval record-audit --ledger record2`), outdated / not a decision:
+
+| Thread | v1 record | v2 record | Notes |
+|---|---|---|---|
+| chimi | 2 / 4 | 0 / 1 | Undercount: both known outdated rules (empty blocks and `Nil`; `Runtime.run` root) are still there. The later decisions that replaced them (`{}` produces `Nil`; no source-level `Runtime.run`, approved with "agree") were never recorded, so the audit sees no conflict. |
+| aetherflow | 0 / 4 | 3 / 1 | Two of the three rest on a later assistant proposal, not a decision; one (UI labels changed at the user's request) is real. |
+| Eldspire | 1 / 3 | 4 / 8 | Combat / Pack / Cargo Load fixed (now "no formal load distinction; 10 slots, 3 Open Pack"). New outdated: Distinctions renamed Traits, 2d10 core roll, Background slot, Rally "deferred". Not a decision: 3 ideas the user only mused on ("maybe", "interesting"), 5 one-off document edits. |
+| Total | 3 / 11 | 7 / 10 (at least 9 / 10 counting chimi) | |
+
+**Runs**, user messages + recent tail + Now + searched record, 3 runs each. Mean of per-run means (range across
+runs); paired is v2 minus the named setup on the same cases (± standard error).
+
+| Set | Now only | Now + v1 ledger in prompt | Now + record v1 | Now + record v2 | v2 vs record v1 | v2 vs Now only |
+|---|---|---|---|---|---|---|
+| chimi pick-ups (10) | **0.94** (0.88–0.97) | 0.93 (0.88–0.95) | 0.89 (0.85–0.97) | 0.91 (0.86–1.00) | +0.02 ± 0.02 | −0.02 ± 0.02 |
+| aetherflow pick-ups (10) | **0.71** (0.67–0.78) | **0.71** (0.69–0.76) | 0.65 (0.65–0.65) | 0.67 (0.65–0.68) | +0.02 ± 0.05 | −0.05 ± 0.06 |
+| Eldspire pick-ups (10) | 0.54 (0.49–0.59) | 0.55 (0.48–0.60) | **0.64** (0.52–0.73) | 0.53 (0.45–0.64) | −0.11 ± 0.06 (2 better, 6 worse) | −0.02 ± 0.07 |
+| Eldspire recall (30) | 0.61 (0.57–0.66) | 0.67 (0.63–0.71) | **0.68** (0.65–0.72) | 0.61 (0.55–0.64) | −0.07 ± 0.04 (6 better, 16 worse) | +0.00 ± 0.04 |
+
+Pitfalls repeated per run, Eldspire pick-ups / recall: record v1 0 / 1.0, record v2 0 / 2.7. Searched: 21/30,
+25/30, 29/30, 76/90 cases. Input tokens per case: chimi 76k, aetherflow 77k, Eldspire 288–307k.
+
+**Reading.**
+- **v2 lost the record's whole Eldspire gain.** Recall 0.61 and pick-ups 0.53 are back at Now only, and stale
+  answers are back at Now-only levels (2.7 per run). The build threads gained a little (+0.02 each, within noise)
+  but stay below Now only.
+- **The cause is missing decisions, not wrong ones.** The stricter prompt made the model record fewer decisions the
+  user approved with a short reply: "user approved" entries halved on Eldspire (41 → 20) and aetherflow (18 → 7).
+  The largest loss, "how does pushing work now?" (−0.89), is a rule approved on Aug 5 that v2 never recorded, so
+  the agent answered from an older push rule. The supersession check only runs on entries that exist, so a missed
+  decision also leaves the one it replaced in force (chimi's two outdated rules).
+- **The supersession check works when the new decision is recorded.** The model now revises old entries: 15
+  replacements and 63 narrowings across the three threads, against 7 replacements before; Eldspire's inventory
+  entry was fixed.
+- **The gate only partly stopped misfiled entries.** Unapproved ideas fell on the build threads but three Eldspire
+  "maybe" ideas still got in, quoting the user's musing as if it were approval.
+- What would fix it is still open: the gate's prompt needs to keep short approvals ("agree", "yes do it") of a
+  specific proposal as decisions, while the code check stays. Not started.
+
 ## 2026-09-28 — decision record as a search, not in the prompt
 
 **Why.** The last round showed the long, specific v1 ledger carries recall but overflows any prompt budget, and a

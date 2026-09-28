@@ -209,7 +209,7 @@ func evalTrials(args []string) error {
 	tail := fs.Bool("tail", false, "user arms: add the verbatim turns since the thread's last real compaction")
 	noUser := fs.Bool("no-user-history", false, "user arms: omit the user-message history")
 	fresh := fs.Int("fresh-summary", 0, "user arms: add a fresh handoff summary at the last compaction, written from this many chars before it")
-	twoPartLedger := fs.String("ledger", "v1", "two-part: ledger version v1 | v2, none for the Now part alone, or record (Now part + spin decisions search)")
+	twoPartLedger := fs.String("ledger", "v1", "two-part: ledger version v1 | v2, none for the Now part alone, or record / record2 (Now part + spin decisions search)")
 	twoPart := fs.Bool("two-part", false, "user arms: use the two-part continuation summary built by 'spin eval two-part' (Now window = --fresh-summary)")
 	fs.Parse(args)
 	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
@@ -397,7 +397,7 @@ func evalTwoPart(args []string) error {
 	in := fs.String("in", "", "comma-separated trial sets: build up to each Codex thread's latest cutoff")
 	window := fs.Int("window", 150000, "characters before each compaction the Now part is written from")
 	workers := fs.Int("workers", 4, "parallel Now parts")
-	ledger := fs.String("ledger", "v1", "ledger version: v1 (writes the Now parts too) | v2 | record (unbounded, searched with spin decisions); v2 and record reuse v1's Now parts")
+	ledger := fs.String("ledger", "v1", "ledger version: v1 (writes the Now parts too) | v2 | record (unbounded, searched with spin decisions) | record2 (record with an approval gate and a supersession check); v2 and the records reuse v1's Now parts")
 	fs.Parse(args)
 	if *in == "" {
 		return errors.New("eval two-part: want --in")
@@ -448,11 +448,12 @@ func evalRecordAudit(args []string) error {
 	fs := flag.NewFlagSet("eval record-audit", flag.ExitOnError)
 	session := fs.String("session", "", "Codex session whose last decision record to audit")
 	out := fs.String("out", "", "write flags as JSON here")
+	ledger := fs.String("ledger", "record", "record version: record | record2")
 	fs.Parse(args)
 	if *session == "" {
 		return errors.New("eval record-audit: want --session")
 	}
-	l, flags, err := eval.AuditRecord(context.Background(), *session)
+	l, flags, err := eval.AuditRecord(context.Background(), *session, *ledger)
 	if err != nil {
 		return err
 	}
