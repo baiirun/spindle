@@ -66,6 +66,8 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
 | **User + tail + fresh summary** | 0.64 (3 runs, 0.63–0.65) | 0.48 (3, 0.45–0.50) | **0.87** (3, 0.85–0.89) | about native on all three threads; aetherflow 0.65 (3, 0.53–0.79); current best |
 | User + tail + v3 | 0.65 (2) | 0.49 (2) | | ties the fresh summary on Eldspire, with more stale answers and 10k more tokens |
 | **User + tail + two-part summary** | 0.67 (3, 0.63–0.71) | **0.55** (3, 0.49–0.60) | **0.93** (3, 0.88–0.95) | ahead of the fresh summary on all four sets by 0.03–0.07 (each about one standard error); aetherflow 0.71 (3, 0.69–0.76); new best, but the ledger half overflowed (see below) |
+| User + tail + Now part only | 0.61 (3, 0.57–0.66) | 0.54 (3) | **0.94** (3, 0.88–0.97) | the pick-up gain is all here; aetherflow 0.71; recall falls without a ledger |
+| User + tail + two-part, ledger v2 (consolidating) | 0.62 (3) | **0.65** (3, 0.61–0.71) | 0.87 (3) | best Eldspire pick-ups so far, but loses recall and chimi; aetherflow 0.72 |
 
 ## What we learned
 
@@ -84,6 +86,9 @@ Scores are 0–1 against hand-checked checklists, one run each unless noted; rep
    ledger hit the size cap by compaction 9–13 and code eviction then decided what stayed: by the end the Eldspire
    ledger held only decisions from the last few days, and chimi's filled with progress notes that pushed out core
    language decisions. The model almost never drops entries itself (2 drops in 123 compactions).
+8. **The two halves do different jobs.** The Now part alone gives the whole pick-up gain; the long, specific v1 ledger
+   gives recall (+0.06 on Eldspire). A consolidating ledger (v2) that merges down to 10–16 entries helped Eldspire
+   pick-ups most (0.65) but lost recall and chimi detail.
 
 ## How other agents compact (checked in source or 2026 docs)
 
@@ -132,7 +137,7 @@ ledger, and replace silent eviction with an explicit merge-or-drop step.
 
 ## In flight / next
 
-- Done 2026-09-28: two-part continuation summary built (`internal/eval/twopart.go`) and tested, 3 runs on each set.
-  Results in `results.md`.
-- Next (waiting for Byron): a Now-only run, to see how much the ledger adds; then fix the ledger's overflow (no
-  progress entries, explicit merge-or-drop instead of eviction) and rerun.
+- Done 2026-09-28: two-part summary (ledger v1), Now only, and ledger v2, 3 runs each; see `results.md`.
+- Open decision for Byron: what the ledger is for (recall, long and specific; or pick-ups, short and merged).
+  Candidates: lift the 400-character cap on merged entries; or keep the v1 ledger out of the prompt as something to
+  search, with the Now part as the compaction summary.

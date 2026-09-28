@@ -2,6 +2,50 @@
 
 Aggregate scores only. Per-trial briefs, traces and grades live in `runs/` (gitignored).
 
+## 2026-09-28 — which half helps: Now only, and a consolidating ledger (v2)
+
+**Why.** The first two-part round beat the fresh summary everywhere, but its ledger overflowed and code eviction
+decided what it kept. Two follow-ups, same cached Now parts, 3 runs each:
+- **Now only**: the two-part summary without the ledger (`--ledger none`).
+- **Ledger v2** (`spin eval two-part --ledger v2`, `--ledger v2`): the prompt keeps progress, status, open questions,
+  next steps and one-off instructions out; when the ledger is over its 16k budget, a separate consolidation call asks
+  the model to merge related entries or drop dead ones (target 12k), and old decisions still in force must be kept.
+  Code eviction stays as a last resort above 20k. The Now parts are v1's (written with the v1 ledger in view), so
+  only the ledger changes.
+
+Mean of per-run means (range across runs); paired is minus the fresh summary on the same cases (± standard error).
+
+| Set | Fresh summary | Now only | Two-part, ledger v1 | Two-part, ledger v2 |
+|---|---|---|---|---|
+| chimi pick-ups (10) | 0.87 | **0.94** (0.88–0.97), +0.06 ± 0.04 | 0.93, +0.05 ± 0.06 | 0.87 (0.85–0.89), −0.00 ± 0.03 |
+| aetherflow pick-ups (10) | 0.65 | 0.71 (0.67–0.78), +0.06 ± 0.06 | 0.71, +0.06 ± 0.06 | **0.72** (0.71–0.73), +0.06 ± 0.05 |
+| Eldspire pick-ups (10) | 0.48 | 0.54 (0.49–0.59), +0.06 ± 0.05 | 0.55, +0.07 ± 0.05 | **0.65** (0.61–0.71), +0.16 ± 0.05 |
+| Eldspire recall (30) | 0.64 | 0.61 (0.57–0.66), −0.03 ± 0.03 | **0.67**, +0.03 ± 0.03 | 0.62 (0.56–0.67), −0.03 ± 0.03 |
+
+Pitfalls repeated per run, Eldspire pick-ups / recall: fresh 0.3 / 1.7, Now only 0 / 3.0, v1 1.0 / 2.7, v2 0 / 2.3.
+
+**Ledger v2 across compactions.** No code evictions on any thread (v1: 53, 3, 111). Instead the model consolidated
+hard: chimi ended with 16 entries (63 drops, 75 replaces), aetherflow 16 (19 drops), Eldspire 10 (99 drops, 181
+replaces). Most drops are "merged into X", and a merged entry is still capped at 400 characters, so merging many
+decisions into one entry cuts their detail. At least one drop was an error ("Not merged; retain it because it remains
+an in-force character sheet decision").
+
+**Reading.**
+- **The Now part carries the pick-up gain.** Now alone matches or beats the full two-part summary on all three
+  pick-up sets (+0.06 over the fresh summary on each). It explicitly names the next step and what we're waiting on,
+  and quotes the latest exchange.
+- **The v1 ledger is what carries recall.** Without it Eldspire recall drops from 0.67 to 0.61, below the fresh
+  summary; v2's merged ledger also drops to 0.62. A long list of specific entries helps "what did we decide about X",
+  even when it's only the recent ones.
+- **v2's Eldspire pick-up jump (0.65, about 3 standard errors above the fresh summary) is the largest single gain
+  so far,** but it comes with lower recall and a chimi loss. A short, merged ledger seems to help pick-ups on a
+  design thread (less stale detail to trip on: 0 pitfalls) and hurt where detail matters (chimi's language
+  decisions, recall probes). One thread, 10 cases: treat it as a lead.
+- No ledger version is a clear win on every set. The next design choice is what the ledger is for: recall (keep it
+  long and specific, and let the user messages cover the rest) or pick-ups (short and merged).
+- Next candidates: remove the 400-character cap on merged entries; or keep the v1 ledger but move it out of the
+  prompt into something the agent can search, leaving the Now part as the compaction summary.
+
 ## 2026-09-28 — two-part continuation summary
 
 **Why.** `variants.md` proposed splitting the compaction summary in two: a **Now** part rewritten fresh at every

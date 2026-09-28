@@ -126,6 +126,56 @@ Rules:
 - Keep the whole ledger under the stated budget: when it is over, drop entries that no longer matter or merge
   related ones with replace.`
 
+// ledgerSystemV2 fixes what the first round showed: the v1 ledger filled with
+// progress notes and open questions, hit its cap within 9-13 compactions, and
+// silent eviction then decided what it kept. v2 keeps progress out and, over
+// budget, asks the model to merge or drop (consolidate) before any eviction.
+const ledgerSystemV2 = ledgerSystem + `
+
+What never goes in the ledger (it belongs to the other half and is rewritten there every compaction):
+- progress, status, milestones, completed or in-flight work, commits, test results ("M4 is complete", "slices 1-3
+  landed", "the sheet was rebuilt");
+- open questions, pending approvals, and next steps;
+- one-off instructions for a single task ("commit this", "fix 5-8").
+A decision is a choice that constrains future work and would still matter weeks later. When in doubt, leave it out.`
+
+const consolidateSystem = `You keep the ledger of one long-running conversation: decisions in force, things tried or rejected, and the
+user's standing preferences. It is over its size budget. Return edit operations, as JSON, that bring it under budget.
+Code applies them.
+
+- replace: merge related entries into one. Reuse the key of one of them, state the merged text fully (keep exact
+  values), keep the strongest who and user_words, and cite 1-2 of the merged entries' cites. Then drop the others.
+- drop: an entry that is progress or status, an open question, a one-off instruction, or superseded by another
+  entry. Give the reason.
+
+Merge before you drop. Never drop a decision that is still in force only because it is old: old decisions are what
+this ledger is for. Fill unused fields with "" or [].`
+
+// consolidate asks the model to merge or drop entries until the ledger is
+// under budget. Eviction by code stays as a last resort (enforceCap).
+func consolidate(ctx context.Context, l *Ledger, step int, cut time.Time, valid map[string]bool) error {
+	for try := 0; try < 2 && len(l.Render()) > ledgerBudget; try++ {
+		cur := l.Render()
+		var out struct {
+			Ops []ledgerOp `json:"ops"`
+		}
+		prompt := fmt.Sprintf("<ledger chars=%d budget=%d>\n%s\n</ledger>", len(cur), ledgerBudget*3/4, cur)
+		req := llm.Request{Model: llm.Reader, System: consolidateSystem, Prompt: prompt, Schema: ledgerSchema, Timeout: 20 * time.Minute}
+		if _, err := llm.JSONRequest(ctx, req, &out); err != nil {
+			return fmt.Errorf("consolidate: %w", err)
+		}
+		for i := range out.Ops {
+			if out.Ops[i].Op == "drop" && out.Ops[i].Reason == "" {
+				out.Ops[i].Reason = "consolidated"
+			}
+		}
+		l.Ops += len(out.Ops)
+		l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid)
+		fmt.Printf("consolidate step %d: %d → %d chars, %d ops\n", step, len(cur), len(l.Render()), len(out.Ops))
+	}
+	return nil
+}
+
 const ledgerSchema = `{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["add","replace","drop"]},"kind":{"type":"string","enum":["decision","tried","preference"]},"key":{"type":"string"},"text":{"type":"string"},"why":{"type":"string"},"who":{"type":"string"},"user_words":{"type":"string"},"date":{"type":"string"},"reason":{"type":"string"},"cites":{"type":"array","items":{"type":"string"}}},"required":["op","kind","key","text","why","who","user_words","date","reason","cites"]}}},"required":["ops"]}`
 
 const nowSystem = `You are the assistant in the conversation below, and your context is about to be compacted. Write the "Now" half
@@ -149,7 +199,8 @@ Rules:
 
 // TwoPartSummary returns the cached two-part summary at the trial's last real
 // compaction and when that compaction happened.
-func TwoPartSummary(s corpus.Session, t Trial, windowChars int) (string, time.Time, error) {
+// ledger is "none" (Now only), "v1" or "v2". Every version reads the same Now parts.
+func TwoPartSummary(s corpus.Session, t Trial, windowChars int, ledger string) (string, time.Time, error) {
 	_, since, err := recentTail(s, t)
 	if err != nil {
 		return "", time.Time{}, err
@@ -170,7 +221,10 @@ func TwoPartSummary(s corpus.Session, t Trial, windowChars int) (string, time.Ti
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("two-part summary not built for %s step %d (run spin eval two-part): %w", t.ID, k+1, err)
 	}
-	l, err := readLedger(ledgerPath(dir, k+1))
+	if ledger == "none" {
+		return "# Now\n\n" + strings.TrimSpace(string(now)), since, nil
+	}
+	l, err := readLedger(ledgerPath(ledgerDir(dir, ledger), k+1))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -274,7 +328,11 @@ func (l *Ledger) apply(ops []ledgerOp, step int, date string, valid map[string]b
 			l.Skipped++
 		}
 	}
-	// Hard cap: evict least recently touched entries, rejected ideas first.
+}
+
+// enforceCap evicts the least recently touched entries, rejected ideas first,
+// while the ledger is over the hard cap. Every eviction is logged.
+func (l *Ledger) enforceCap(step int) {
 	for len(l.Render()) > ledgerHardCap && len(l.Entries) > 0 {
 		victim, rank := "", func(e LedgerEntry) int {
 			if e.Kind == "tried" {
@@ -297,10 +355,16 @@ func (l *Ledger) apply(ops []ledgerOp, step int, date string, valid map[string]b
 	}
 }
 
-// BuildTwoPart chains the ledger across a Codex thread's real compaction
-// points up to `until`, and writes the Now part at the compaction points in
-// nowAt. Everything is cached; cached steps are reused.
-func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []time.Time, windowChars, workers int) error {
+// BuildTwoPart chains the ledger (version v1 or v2) across a Codex thread's
+// real compaction points up to `until`, and writes the Now part at the
+// compaction points in nowAt. Everything is cached; cached steps are reused.
+// Now parts are shared by all ledger versions (they are written with the v1
+// ledger in view), so ledger versions differ only in the ledger.
+func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []time.Time, windowChars, workers int, version string) error {
+	system := ledgerSystem
+	if version == "v2" {
+		system = ledgerSystemV2
+	}
 	path, err := findCodexRollout(session)
 	if err != nil {
 		return err
@@ -318,7 +382,8 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 		valid[it.ID] = true
 	}
 	dir := filepath.Join(twoPartCache, session)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	ldir := ledgerDir(dir, version)
+	if err := os.MkdirAll(ldir, 0o755); err != nil {
 		return err
 	}
 	l := Ledger{Entries: map[string]LedgerEntry{}}
@@ -328,7 +393,7 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 			break
 		}
 		step := i + 1
-		p := ledgerPath(dir, step)
+		p := ledgerPath(ldir, step)
 		if cached, err := readLedger(p); err == nil {
 			l, from = cached, cut
 			continue
@@ -341,12 +406,18 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 			cur := l.Render()
 			prompt := fmt.Sprintf("<ledger chars=%d budget=%d>\n%s\n</ledger>\n\n<conversation_since>\n%s</conversation_since>",
 				len(cur), ledgerBudget, cur, chunk)
-			req := llm.Request{Model: llm.Reader, System: ledgerSystem, Prompt: prompt, Schema: ledgerSchema, Timeout: 20 * time.Minute}
+			req := llm.Request{Model: llm.Reader, System: system, Prompt: prompt, Schema: ledgerSchema, Timeout: 20 * time.Minute}
 			if _, err := llm.JSONRequest(ctx, req, &out); err != nil {
 				return fmt.Errorf("ledger step %d: %w", step, err)
 			}
 			l.Ops += len(out.Ops)
 			l.apply(out.Ops, step, cut.UTC().Format("2006-01-02"), valid)
+			if version == "v2" && len(l.Render()) > ledgerBudget {
+				if err := consolidate(ctx, &l, step, cut, valid); err != nil {
+					return fmt.Errorf("ledger step %d: %w", step, err)
+				}
+			}
+			l.enforceCap(step)
 		}
 		l.AsOf, l.Step = cut, step
 		if err := writeJSON(p, l); err != nil {
@@ -373,12 +444,15 @@ func BuildTwoPart(ctx context.Context, session string, until time.Time, nowAt []
 		if _, err := os.Stat(p); err == nil {
 			continue
 		}
+		if version != "v1" {
+			return fmt.Errorf("Now part %d missing: build with --ledger v1 first", step)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			led, err := readLedger(ledgerPath(dir, step))
+			led, err := readLedger(ledgerPath(ledgerDir(dir, "v1"), step))
 			if err == nil {
 				var now string
 				if now, err = writeNow(ctx, s, cuts[k], led, windowChars); err == nil {
@@ -524,6 +598,14 @@ func chunkItems(items []corpus.Item, n int) []string {
 		chunks = append(chunks, b.String())
 	}
 	return chunks
+}
+
+// ledgerDir keeps v1 ledgers where the first round wrote them.
+func ledgerDir(dir, version string) string {
+	if version == "v1" || version == "" {
+		return dir
+	}
+	return filepath.Join(dir, version)
 }
 
 func ledgerPath(dir string, step int) string {

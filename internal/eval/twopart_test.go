@@ -39,6 +39,7 @@ func TestLedgerHardCap(t *testing.T) {
 		ops = append(ops, ledgerOp{Op: "add", Kind: "decision", Key: strings.Repeat("k", i+1), Text: strings.Repeat("x", 390)})
 	}
 	l.apply(ops, 1, "2026-07-01", nil)
+	l.enforceCap(1)
 	if n := len(l.Render()); n > ledgerHardCap {
 		t.Fatalf("rendered %d chars over the cap", n)
 	}

@@ -40,6 +40,7 @@ type TrialRunOptions struct {
 	NoUserHistory bool   // user arms: omit the user-message history (context blocks only)
 	FreshSummary  int    // user arms: add a fresh handoff summary at the last compaction from this many chars before it
 	TwoPart       bool   // user arms: use the cached two-part continuation summary (Now from FreshSummary chars + ledger) instead
+	TwoPartLedger string // two-part: ledger version v1 | v2, or none for the Now part alone
 	Workers       int
 }
 

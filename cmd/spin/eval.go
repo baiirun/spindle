@@ -207,6 +207,7 @@ func evalTrials(args []string) error {
 	tail := fs.Bool("tail", false, "user arms: add the verbatim turns since the thread's last real compaction")
 	noUser := fs.Bool("no-user-history", false, "user arms: omit the user-message history")
 	fresh := fs.Int("fresh-summary", 0, "user arms: add a fresh handoff summary at the last compaction, written from this many chars before it")
+	twoPartLedger := fs.String("ledger", "v1", "two-part: ledger version v1 | v2, or none for the Now part alone")
 	twoPart := fs.Bool("two-part", false, "user arms: use the two-part continuation summary built by 'spin eval two-part' (Now window = --fresh-summary)")
 	fs.Parse(args)
 	if (*arm == eval.ArmMemory || *arm == eval.ArmMemoryAgent || *arm == eval.ArmUserMemory || *arm == eval.ArmUserHandoff || *arm == eval.ArmHandoff) && *memoryDir == "" {
@@ -262,7 +263,7 @@ func evalTrials(args []string) error {
 	}
 	results, runErr := eval.RunTrials(context.Background(), eval.TrialRunOptions{
 		CorpusRoot: *corpusRoot, EpisodeRoot: *episodes, Version: filepath.Base(*episodes), Binary: bin,
-		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast, Tail: *tail, NoUserHistory: *noUser, FreshSummary: *fresh, TwoPart: *twoPart,
+		Arm: *arm, Trials: trials, RunDir: runDir, ScratchDir: filepath.Join("/private/tmp/spindle-trials", name), Workers: *workers, MemoryDir: *memoryDir, UserLast: *userLast, Tail: *tail, NoUserHistory: *noUser, FreshSummary: *fresh, TwoPart: *twoPart, TwoPartLedger: *twoPartLedger,
 	})
 	s := eval.SummarizeTrials(*arm, results)
 	b, _ := json.MarshalIndent(s, "", "  ")
@@ -394,6 +395,7 @@ func evalTwoPart(args []string) error {
 	in := fs.String("in", "", "comma-separated trial sets: build up to each Codex thread's latest cutoff")
 	window := fs.Int("window", 150000, "characters before each compaction the Now part is written from")
 	workers := fs.Int("workers", 4, "parallel Now parts")
+	ledger := fs.String("ledger", "v1", "ledger version: v1 (writes the Now parts too) | v2 (reuses v1's Now parts)")
 	fs.Parse(args)
 	if *in == "" {
 		return errors.New("eval two-part: want --in")
@@ -412,7 +414,7 @@ func evalTwoPart(args []string) error {
 	}
 	for session, u := range until {
 		fmt.Printf("session %s: ledger through %s, %d Now parts\n", session, u.Format(time.RFC3339), len(nowAt[session]))
-		if err := eval.BuildTwoPart(context.Background(), session, u, nowAt[session], *window, *workers); err != nil {
+		if err := eval.BuildTwoPart(context.Background(), session, u, nowAt[session], *window, *workers, *ledger); err != nil {
 			return fmt.Errorf("%s: %w", session, err)
 		}
 	}
