@@ -138,7 +138,7 @@ worker.log                  extraction, dreams the worker ran, model fallbacks
 dream.log                   the schedule's runs
 ```
 
-A memory file uses Claude Code's format:
+A memory file looks like this:
 
 ```markdown
 ---
