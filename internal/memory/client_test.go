@@ -9,7 +9,7 @@ import (
 func TestClient(t *testing.T) {
 	p := project(t)
 	cli, agent := p.Client("cli"), p.Client("codex")
-	if msg, err := cli.Write(Op{Name: "Go Vet", Type: "directive", Description: "Run go vet before committing", Body: "Run it."}); err != nil || msg != "Saved go-vet.md." {
+	if msg, err := cli.Write(Op{Name: "Go Vet", Type: "directive", Description: "Run go vet before committing", Body: "Run it."}); err != nil || msg != "Saved proj/go-vet.md." {
 		t.Fatalf("write: %q %v", msg, err)
 	}
 	// An edit can keep the type and description.
@@ -98,7 +98,7 @@ func TestOneDreamAtATime(t *testing.T) {
 
 func TestEmptyIndexSaysSo(t *testing.T) {
 	p := project(t)
-	if got := p.Client("cli").Index(); !strings.HasPrefix(got, "No memories yet") {
+	if got := p.Client("cli").Index(); !strings.Contains(got, "# proj (this folder's project)\n\nNo memories yet.") {
 		t.Errorf("index %q", got)
 	}
 }

@@ -20,7 +20,9 @@ type Job struct {
 	Agent      string    `json:"agent"`
 	Session    string    `json:"session"`
 	Transcript string    `json:"transcript"`
-	Root       string    `json:"root"`
+	Cwd        string    `json:"cwd"`
+	Project    string    `json:"project,omitempty"` // the session's project when queued
+	Root       string    `json:"root,omitempty"`    // older jobs: the repository root
 	At         time.Time `json:"at"`
 }
 
@@ -86,11 +88,7 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 }
 
 func drain(ctx context.Context, home string, o WorkerOptions) error {
-	type target struct {
-		project Project
-		agent   string
-	}
-	touched := map[string]target{}
+	agent := ""
 	for {
 		paths := pending(home)
 		if len(paths) == 0 {
@@ -101,7 +99,10 @@ func drain(ctx context.Context, home string, o WorkerOptions) error {
 		var order []string
 		for _, path := range paths {
 			var j Job
-			if err := readJSON(path, &j); err == nil && j.Root != "" && j.Transcript != "" {
+			if err := readJSON(path, &j); err == nil && j.Transcript != "" {
+				if j.Cwd == "" {
+					j.Cwd = j.Root
+				}
 				if _, ok := jobs[j.Transcript]; !ok {
 					order = append(order, j.Transcript)
 				}
@@ -114,34 +115,65 @@ func drain(ctx context.Context, home string, o WorkerOptions) error {
 				return ctx.Err()
 			}
 			j := jobs[tp]
-			p := At(home, j.Root)
-			touched[p.Dir] = target{p, j.Agent}
+			agent = j.Agent
+			p, err := jobContext(home, j)
+			if err != nil {
+				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
+				continue
+			}
 			res, err := Extract(ctx, p, tp, o.Models(j.Agent, model.Extract), o.Now())
 			switch {
 			case err != nil:
 				// The cursor did not move, so the next Stop retries.
 				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
 			case res.Skip == "":
-				fmt.Fprintf(o.Log, "%s extract %s %s: %d written, %d deleted, %d skipped\n", stamp(o.Now()), p.Name(), filepath.Base(tp), res.Written, res.Deleted, res.Result.Skipped)
+				fmt.Fprintf(o.Log, "%s extract %s %s: %d written, %d deleted, %d skipped\n", stamp(o.Now()), orDash(p.Name), filepath.Base(tp), res.Written, res.Deleted, res.Result.Skipped)
 			}
 		}
 	}
-	if o.NoDream {
+	if o.NoDream || agent == "" {
 		return nil
 	}
-	for _, t := range touched {
-		state, err := t.project.LoadState()
-		if err != nil || !DreamDue(state, o.Now()) {
-			continue
-		}
-		res, err := Dream(ctx, t.project, o.Models(t.agent, model.Dream), o.Now())
-		if err != nil {
-			fmt.Fprintf(o.Log, "%s dream %s: %v\n", stamp(o.Now()), t.project.Name(), err)
-			continue
-		}
-		fmt.Fprintf(o.Log, "%s dream %s: %d written, %d deleted. %s\n", stamp(o.Now()), t.project.Name(), res.Written, res.Deleted, res.Summary)
-	}
+	DreamDueStores(ctx, home, o.Models(agent, model.Dream), o.Now(), o.Log)
 	return nil
+}
+
+// DreamDueStores dreams every store whose gate is open. The scheduled run
+// (spin dream --due) and the worker after each drain both call it; the gate
+// and the dream lock keep them from doubling up. It returns how many ran.
+func DreamDueStores(ctx context.Context, home string, m model.Model, now time.Time, log io.Writer) int {
+	n := 0
+	all, _ := stores(home)
+	for _, s := range all {
+		if ctx.Err() != nil {
+			break
+		}
+		state, err := s.LoadState()
+		if err != nil || !DreamDue(state, now) {
+			continue
+		}
+		n++
+		res, err := Dream(ctx, s, m, now)
+		if err != nil {
+			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), s.Name, err)
+			continue
+		}
+		fmt.Fprintf(log, "%s dream %s: %d written, %d deleted. %s\n", stamp(now), s.Name, res.Written, res.Deleted, res.Summary)
+	}
+	return n
+}
+
+// jobContext is the session context a job was queued in.
+func jobContext(home string, j Job) (Project, error) {
+	if j.Project != "" {
+		p := Store(home, j.Project)
+		p.Cwd = j.Cwd
+		return p, nil
+	}
+	if j.Cwd == "" {
+		return Project{Home: home}, nil
+	}
+	return Hint(home, j.Cwd)
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }

@@ -11,7 +11,9 @@ import (
 )
 
 func TestTools(t *testing.T) {
-	p := memory.At(t.TempDir(), t.TempDir())
+	home, dir := t.TempDir(), t.TempDir()
+	memory.Store(home, "proj").Link(dir)
+	c := memory.NewClient(home, dir, "", "claude")
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
@@ -26,7 +28,7 @@ func TestTools(t *testing.T) {
 		`{"jsonrpc":"2.0","id":10,"method":"nope"}`,
 	}, "\n")
 	var out strings.Builder
-	if err := (Server{Name: "spindle", Version: "t", Tools: MemoryTools(p, "claude", nil)}).Serve(context.Background(), strings.NewReader(in), &out); err != nil {
+	if err := (Server{Name: "spindle", Version: "t", Tools: MemoryTools(c, nil)}).Serve(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatal(err)
 	}
 	type resp struct {
@@ -52,16 +54,16 @@ func TestTools(t *testing.T) {
 		}
 		return got[id].Result.Content[0].Text
 	}
-	if len(got) != 10 || got[1].Result.ProtocolVersion != "2025-03-26" || len(got[2].Result.Tools) != 9 {
+	if len(got) != 10 || got[1].Result.ProtocolVersion != "2025-03-26" || len(got[2].Result.Tools) != 11 {
 		t.Fatalf("responses:\n%s", out.String())
 	}
-	if text(3) != "Saved no-mocks.md." || !strings.Contains(text(4), "no-mocks.md") || !strings.Contains(text(5), "**Why:** mocks") || !strings.Contains(text(6), "[no-mocks](no-mocks.md)") {
+	if text(3) != "Saved proj/no-mocks.md." || !strings.Contains(text(4), "no-mocks.md") || !strings.Contains(text(5), "**Why:** mocks") || !strings.Contains(text(6), "[no-mocks](proj/no-mocks.md)") {
 		t.Fatalf("write/search/read/index:\n%s", out.String())
 	}
-	if !got[7].Result.IsError || text(8) != "Deleted no-mocks.md." || !got[9].Result.IsError || got[10].Error == nil {
+	if !got[7].Result.IsError || text(8) != "Deleted proj/no-mocks.md." || !got[9].Result.IsError || got[10].Error == nil {
 		t.Fatalf("errors:\n%s", out.String())
 	}
-	changes, _ := p.Changes()
+	changes, _ := memory.Store(home, "proj").Changes()
 	if len(changes) != 2 || changes[0].By != "agent" {
 		t.Fatalf("changes = %+v", changes)
 	}

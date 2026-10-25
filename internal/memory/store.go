@@ -1,23 +1,29 @@
-// Package memory is a project's long-term memory, after Claude Code's auto
-// memory: a folder of Markdown files, one subject each, typed and described in
-// one line, plus a MEMORY.md index that is always loaded. Files are rewritten
-// in place when a fact changes and deleted when it turns out wrong; every
-// write and delete, with the old text, also goes to changes.jsonl so nothing
-// is lost for audit.
+// Package memory is long-term memory for all of a user's projects, after
+// Claude Code's auto memory: folders of Markdown files, one subject each,
+// typed and described in one line, each with a MEMORY.md index. A memory
+// belongs to one named project or to global; every session can see every
+// project's memories, and its folder only hints at which project it is in.
+// Files are rewritten in place when a fact changes and deleted when it turns
+// out wrong; every write and delete, with the old text, also goes to
+// changes.jsonl so nothing is lost for audit.
 //
-// Layout under <SPINDLE_HOME>/projects/<name>-<hash>/:
+// Layout under <SPINDLE_HOME>:
 //
-//	memory/MEMORY.md     index, rebuilt by code after every change
-//	memory/<name>.md     one memory
-//	changes.jsonl        audit log of writes and deletes
-//	state.json           transcript cursors, sessions seen, dream gate
-//	recall/<session>.json what one session was shown, and its pending selection
-//	lock                 flock held by every writer
+//	global/                memories for every project (a store, as below)
+//	projects/<name>/       one project's store:
+//	  project.json         name, description, linked folders
+//	  memory/MEMORY.md     index, rebuilt by code after every change
+//	  memory/<name>.md     one memory
+//	  changes.jsonl        audit log of writes and deletes
+//	  state.json           dream gate: last dream, sessions since
+//	  lock                 flock held by every writer
+//	events.jsonl           activity log, all projects
+//	cursors.json           how far extraction has read each transcript
+//	recall/<session>.json  what one session was shown, and its pending selection
+//	queue/                 extraction jobs
 package memory
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,7 +56,7 @@ const (
 	FileBytes  = 4_096
 )
 
-// HomeEnv selects the data root; ProjectEnv pins the project root.
+// HomeEnv selects the data root; ProjectEnv names the session's project.
 const (
 	HomeEnv    = "SPINDLE_HOME"
 	ProjectEnv = "SPINDLE_PROJECT"
@@ -74,75 +80,32 @@ func Home() (string, error) {
 	return filepath.Join(u, ".spindle"), nil
 }
 
-// Project is one memory bucket: everything under one project root.
+// Project is one memory store: a named project, or global. As the receiver
+// of the cross-project methods (LoadAll, recall, ApplyAll, StartContext) it
+// is also the session's context: the project its folder hints at, which may
+// be none (Name ""), and that folder.
 type Project struct {
-	Root string
+	Name string
 	Dir  string
 	Home string
+	Cwd  string // the session's folder, when known
 }
 
-// Resolve maps a working directory to its project: SPINDLE_PROJECT, else the
-// nearest directory above with a .git entry, else the directory itself.
-func Resolve(home, cwd string) (Project, error) {
-	root := strings.TrimSpace(os.Getenv(ProjectEnv))
-	if root == "" {
-		if cwd == "" {
-			var err error
-			if cwd, err = os.Getwd(); err != nil {
-				return Project{}, err
-			}
-		}
-		root = gitRoot(cwd)
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return Project{}, err
-	}
-	return At(home, abs), nil
-}
-
-// At is the project for a known root.
-func At(home, root string) Project {
-	root = filepath.Clean(root)
-	return Project{Root: root, Dir: filepath.Join(home, "projects", slug(root)), Home: home}
-}
-
-func gitRoot(dir string) string {
-	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return d
-		}
-		if filepath.Dir(d) == d {
-			return dir
-		}
-	}
-}
-
-var slugUnsafe = regexp.MustCompile(`[^a-z0-9._-]+`)
-
-func slug(root string) string {
-	base := strings.Trim(slugUnsafe.ReplaceAllString(strings.ToLower(filepath.Base(root)), "-"), "-.")
-	if base == "" {
-		base = "root"
-	}
-	sum := sha256.Sum256([]byte(root))
-	return base + "-" + hex.EncodeToString(sum[:4])
-}
-
-func (p Project) Name() string      { return filepath.Base(p.Root) }
 func (p Project) MemDir() string    { return filepath.Join(p.Dir, "memory") }
-func (p Project) IndexPath() string { return filepath.Join(p.MemDir(), "MEMORY.md") }
+func (p Project) IndexPath() string { return filepath.Join(p.Dir, "memory", "MEMORY.md") }
 
-// Init creates the folders and records the root.
+// Init creates the store's folders and its project.json.
 func (p Project) Init() error {
+	if p.Name == "" {
+		return errNoProject
+	}
 	if err := os.MkdirAll(p.MemDir(), 0o755); err != nil {
 		return err
 	}
-	meta := filepath.Join(p.Dir, "project.json")
-	if _, err := os.Stat(meta); err == nil {
+	if _, err := os.Stat(p.metaPath()); err == nil {
 		return nil
 	}
-	return writeJSON(meta, map[string]any{"root": p.Root, "created": time.Now().UTC()})
+	return writeJSON(p.metaPath(), Meta{Name: p.Name, Created: time.Now().UTC()})
 }
 
 // Memory is one file.
@@ -265,6 +228,10 @@ type Op struct {
 	Description string `json:"description"`
 	Body        string `json:"body"`
 	Reason      string `json:"reason"` // for delete
+	// Project names the store: a project, "global", or "" for the default
+	// (see route). A name of the form <project>/<name> sets it too.
+	Project            string `json:"project,omitempty"`
+	ProjectDescription string `json:"project_description,omitempty"` // for a new project
 }
 
 // Change is one audit-log line.
@@ -285,8 +252,8 @@ type Result struct {
 	Changed                   []string // "+name" written, "-name" deleted
 }
 
-// Apply writes and deletes memories, logs each change, and rebuilds the
-// index. Callers hold the project lock.
+// Apply writes and deletes memories in this store, logs each change, and
+// rebuilds the index. Callers hold the store's lock; names are bare.
 func (p Project) Apply(ops []Op, by, session string, now time.Time) (Result, error) {
 	var res Result
 	if err := p.Init(); err != nil {
@@ -411,7 +378,7 @@ func (p Project) ReadIndex() string {
 	return string(b)
 }
 
-// Lock takes the project's writer lock.
+// Lock takes the store's writer lock.
 func (p Project) Lock() (func(), error) {
 	if err := os.MkdirAll(p.Dir, 0o755); err != nil {
 		return nil, err
