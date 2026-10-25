@@ -1,31 +1,38 @@
-// Command spin is the spindle CLI: it turns agent transcripts into durable,
-// searchable context for continuing work.
+// Command spin is spindle's CLI: long-term project memory for Claude Code and
+// Codex, through their hooks and an MCP server. See docs/design.md.
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
-	"spindle/internal/corpus"
+	"spindle/internal/hooks"
+	"spindle/internal/mcp"
+	"spindle/internal/memory"
+	"spindle/internal/model"
 )
 
 const usage = `usage: spin <command> [flags]
 
-commands:
-  ingest   normalize Codex and Claude transcripts into Markdown chunks
-  sleep    project one source session into durable handoff episodes
-  wake     return a bounded, read-only continuity context
-  resume   return the startup packet for a known prior session
-  search   find episodes and transcript passages
-  read     expand an episode or transcript reference
-  related  follow explicit episode continuation links
-  decisions search a decision record (eval: the two-part ledger kept out of the prompt)
-  dream    fold a project's episodes into project memory (working state, history, superseded)
-  snapshot build a leak-free view of spindle data before a time (for trials)
-  eval     mine | label | run | report | continue
+  hook      handle one Claude Code or Codex hook event (JSON on stdin)
+  mcp       serve the project's memory tools over stdio
+  status    show a project's memory
+  log       show the project's memory activity: recalls, saves, tool calls (-f to follow)
+  install   print the hook and MCP config for claude or codex
+  dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
+  extract   run extraction on one transcript now
+  worker    drain the extraction queue (hooks start it)
+  select    run the recall selector for a pending message (hooks start it)
 `
 
 func main() {
@@ -33,37 +40,9 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	if err := loadRoots(); err != nil {
-		fmt.Fprintln(os.Stderr, "spin:", err)
-		os.Exit(1)
-	}
-	var err error
-	switch os.Args[1] {
-	case "ingest":
-		err = runIngest(os.Args[2:])
-	case "sleep":
-		err = runSleep(os.Args[2:])
-	case "wake":
-		err = runWake(os.Args[2:])
-	case "resume":
-		err = runResume(os.Args[2:])
-	case "search":
-		err = runSearch(os.Args[2:])
-	case "read":
-		err = runRead(os.Args[2:])
-	case "related":
-		err = runRelated(os.Args[2:])
-	case "decisions":
-		err = runDecisions(os.Args[2:])
-	case "dream":
-		err = runDream(os.Args[2:])
-	case "snapshot":
-		err = runSnapshot(os.Args[2:])
-	case "eval":
-		err = runEval(os.Args[2:])
-	default:
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+	home, err := memory.Home()
+	if err == nil {
+		err = run(home, os.Args[1], os.Args[2:])
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spin:", err)
@@ -71,100 +50,301 @@ func main() {
 	}
 }
 
-func runIngest(args []string) error {
-	home, _ := os.UserHomeDir()
-	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
-	codexHome := fs.String("codex-home", filepath.Join(home, ".codex"), "Codex home directory")
-	claudeProjects := fs.String("claude-projects", filepath.Join(home, ".claude", "projects"), "Claude Code projects directory")
-	out := fs.String("out", roots.Corpus, "corpus output root")
-	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: spin ingest [flags] [transcript.jsonl ...]\n\nWith no files, ingests every Codex and Claude session. With files, ingests only those.")
-		fs.PrintDefaults()
+func run(home, cmd string, args []string) error {
+	switch cmd {
+	case "hook":
+		return runHook(home, args)
+	case "mcp":
+		return runMCP(home, args)
+	case "status":
+		return runStatus(home, args)
+	case "log":
+		return runLog(home, args)
+	case "install":
+		return runInstall(args)
+	case "dream":
+		return runDream(home, args)
+	case "extract":
+		return runExtract(home, args)
+	case "worker":
+		return runWorker(home, args)
+	case "select":
+		return runSelect(home, args)
 	}
-	fs.Parse(args)
-
-	var sessions, chunks, skipped int
-	ingest := func(read func(string) (corpus.Session, bool, error), paths []string) error {
-		for _, p := range paths {
-			n, err := ingestTranscript(read, p, *out)
-			if err != nil {
-				return err
-			}
-			if n == 0 {
-				skipped++
-				continue
-			}
-			chunks += n
-			sessions++
-		}
-		return nil
-	}
-
-	if fs.NArg() > 0 {
-		for _, p := range fs.Args() {
-			abs, err := filepath.Abs(p)
-			if err != nil {
-				return err
-			}
-			read := corpus.ReadClaudeSession
-			if within(abs, *codexHome) {
-				read = corpus.ReadCodexSession
-			} else if !within(abs, *claudeProjects) {
-				return fmt.Errorf("%s is not under --codex-home or --claude-projects", p)
-			}
-			if err := ingest(read, []string{abs}); err != nil {
-				return err
-			}
-		}
-		fmt.Printf("ingested %d sessions into %d chunks under %s (%d skipped: subagent or empty)\n", sessions, chunks, *out, skipped)
-		return nil
-	}
-
-	codexPaths, err := corpus.CodexSessionPaths(*codexHome)
-	if err != nil {
-		return err
-	}
-	if err := ingest(corpus.ReadCodexSession, codexPaths); err != nil {
-		return err
-	}
-	claudePaths, err := corpus.ClaudeSessionPaths(*claudeProjects)
-	if err != nil {
-		return err
-	}
-	if err := ingest(corpus.ReadClaudeSession, claudePaths); err != nil {
-		return err
-	}
-	fmt.Printf("ingested %d sessions into %d chunks under %s (%d skipped: subagent or empty)\n", sessions, chunks, *out, skipped)
+	fmt.Fprint(os.Stderr, usage)
+	os.Exit(2)
 	return nil
 }
 
-// ingestTranscript normalizes one source transcript into corpus chunks and
-// returns how many chunks it wrote; 0 means the session was skipped
-// (a subagent or empty session).
-func ingestTranscript(read func(string) (corpus.Session, bool, error), path, out string) (int, error) {
-	s, ok, err := read(path)
+// runHook always exits 0: a memory failure must never block a session.
+func runHook(home string, args []string) error {
+	fs := flag.NewFlagSet("hook", flag.ExitOnError)
+	agent := fs.String("agent", "", "claude or codex (default: detect from the transcript)")
+	fs.Parse(args)
+	wait := 4 * time.Second
+	if v, err := strconv.ParseFloat(os.Getenv("SPINDLE_RECALL_WAIT"), 64); err == nil {
+		wait = time.Duration(v * float64(time.Second))
+	}
+	h := hooks.Handler{Home: home, Agent: *agent, Spawn: spawn(home), RecallWait: wait, LocalRecall: os.Getenv("SPINDLE_RECALL") == "local"}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := h.Run(ctx, os.Stdin, os.Stdout); err != nil {
+		hooks.Logf(home, "hook: %v", err)
+	}
+	return nil
+}
+
+// spawn starts a detached spin that outlives the hook. Its environment
+// carries SPINDLE_INNER, so hooks fired by its own claude or codex calls do nothing.
+func spawn(home string) func(args ...string) error {
+	return func(args ...string) error {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			return err
+		}
+		log, err := os.OpenFile(filepath.Join(home, "worker.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		cmd := exec.Command(exe, args...)
+		cmd.Env = append(os.Environ(), memory.InnerEnv+"=1")
+		cmd.Stdout, cmd.Stderr = log, log
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Process.Release()
+	}
+}
+
+func projectFlag(fs *flag.FlagSet) *string {
+	return fs.String("project", "", "project directory (default: the working directory)")
+}
+
+func runMCP(home string, args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	dir := projectFlag(fs)
+	agent := fs.String("agent", "", "claude or codex, for the activity log")
+	fs.Parse(args)
+	p, err := memory.Resolve(home, *dir)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if !ok || len(s.Items) == 0 {
-		return 0, nil
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent)}.Serve(ctx, os.Stdin, os.Stdout)
+}
+
+func runStatus(home string, args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	dir := projectFlag(fs)
+	fs.Parse(args)
+	p, err := memory.Resolve(home, *dir)
+	if err != nil {
+		return err
 	}
-	chunks := corpus.SplitChunks(s)
-	for _, c := range chunks {
-		if _, err := c.Write(out); err != nil {
-			return 0, err
+	mems, err := p.Load()
+	if err != nil {
+		return err
+	}
+	st, err := p.LoadState()
+	if err != nil {
+		return err
+	}
+	counts := map[string]int{}
+	for _, m := range mems {
+		counts[m.Type]++
+	}
+	fmt.Printf("project  %s\nmemory   %s\n", p.Root, p.MemDir())
+	fmt.Printf("files    %d (user %d, directive %d, project %d, reference %d)\n", len(mems), counts["user"], counts["directive"], counts["project"], counts["reference"])
+	last := "never"
+	if !st.LastDream.IsZero() {
+		last = st.LastDream.Local().Format("2006-01-02 15:04")
+	}
+	fmt.Printf("dream    last %s; %d of %d sessions since, due after %s\n", last, len(st.Sessions), memory.DreamSessions, memory.DreamEvery)
+	for path, c := range st.Cursors {
+		fmt.Printf("cursor   %s line %d, %s (%s)\n", c.Agent, c.Line, c.At.Local().Format("2006-01-02 15:04"), path)
+	}
+	return nil
+}
+
+func runInstall(args []string) error {
+	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	bin := fs.String("bin", "", "path to spin (default: this binary)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin install [--bin PATH] claude|codex\n\nPrints the config to merge by hand; nothing is written.")
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	path := *bin
+	if path == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		path = exe
+	}
+	out, err := hooks.InstallConfig(fs.Arg(0), path)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
+}
+
+func runDream(home string, args []string) error {
+	fs := flag.NewFlagSet("dream", flag.ExitOnError)
+	dir := projectFlag(fs)
+	force := fs.Bool("force", false, "run even if the gate is closed")
+	agent := fs.String("agent", "claude", "which CLI runs the model: claude or codex")
+	fs.Parse(args)
+	p, err := memory.Resolve(home, *dir)
+	if err != nil {
+		return err
+	}
+	st, err := p.LoadState()
+	if err != nil {
+		return err
+	}
+	if !*force && !memory.DreamDue(st, time.Now()) {
+		fmt.Printf("not due: %d of %d sessions since the last dream; --force to run anyway\n", len(st.Sessions), memory.DreamSessions)
+		return nil
+	}
+	os.Setenv(memory.InnerEnv, "1")
+	res, err := memory.Dream(context.Background(), p, model.For(*agent, model.Dream), time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d written, %d deleted, %d skipped\n%s\n", res.Written, res.Deleted, res.Skipped, res.Summary)
+	return nil
+}
+
+func runExtract(home string, args []string) error {
+	fs := flag.NewFlagSet("extract", flag.ExitOnError)
+	dir := projectFlag(fs)
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin extract [--project DIR] transcript.jsonl") }
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	path, err := filepath.Abs(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	agent, err := memory.DetectAgent(path)
+	if err != nil {
+		return err
+	}
+	root := *dir
+	if root == "" {
+		if root, err = memory.TranscriptCwd(path); err != nil {
+			return err
 		}
 	}
-	return len(chunks), nil
+	p, err := memory.Resolve(home, root)
+	if err != nil {
+		return err
+	}
+	os.Setenv(memory.InnerEnv, "1")
+	res, err := memory.Extract(context.Background(), p, path, model.For(agent, model.Extract), time.Now())
+	if err != nil {
+		return err
+	}
+	if res.Skip != "" {
+		fmt.Println("skipped:", res.Skip)
+		return nil
+	}
+	fmt.Printf("%s: %d written, %d deleted, %d skipped\n", p.Name(), res.Written, res.Deleted, res.Result.Skipped)
+	return nil
 }
 
-// within reports whether path is inside dir.
-func within(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+func runWorker(home string, args []string) error {
+	fs := flag.NewFlagSet("worker", flag.ExitOnError)
+	noDream := fs.Bool("no-dream", false, "skip the dream gate check")
+	fs.Parse(args)
+	os.Setenv(memory.InnerEnv, "1")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoDream: *noDream})
 }
 
-// cwdMatches reports whether a session belongs to a project slice.
-func cwdMatches(cwd, slice string) bool {
-	return slice == "" || strings.Contains(strings.ToLower(cwd), strings.ToLower(slice))
+func runSelect(home string, args []string) error {
+	fs := flag.NewFlagSet("select", flag.ExitOnError)
+	root := fs.String("root", "", "project root")
+	session := fs.String("session", "", "session ID")
+	id := fs.String("id", "", "pending selection ID")
+	agent := fs.String("agent", "claude", "claude or codex")
+	fs.Parse(args)
+	if *root == "" || *id == "" {
+		return fmt.Errorf("--root and --id are required")
+	}
+	os.Setenv(memory.InnerEnv, "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return memory.At(home, *root).RunSelect(ctx, *session, *id, model.For(*agent, model.Select), false)
+}
+
+func runLog(home string, args []string) error {
+	fs := flag.NewFlagSet("log", flag.ExitOnError)
+	dir := projectFlag(fs)
+	follow := fs.Bool("f", false, "keep printing new events")
+	n := fs.Int("n", 50, "show the last n events (0: all)")
+	session := fs.String("session", "", "only this session (a prefix is enough)")
+	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, mcp, extract, dream")
+	asJSON := fs.Bool("json", false, "print raw JSON lines")
+	fs.Parse(args)
+	p, err := memory.Resolve(home, *dir)
+	if err != nil {
+		return err
+	}
+	keep := func(e memory.Event) bool {
+		return strings.HasPrefix(e.Session, *session) && (*kind == "" || e.Kind == *kind)
+	}
+	print := func(e memory.Event) {
+		if *asJSON {
+			b, _ := json.Marshal(e)
+			fmt.Println(string(b))
+		} else {
+			fmt.Println(e)
+		}
+	}
+	evs, err := p.Events()
+	if err != nil {
+		return err
+	}
+	var shown []memory.Event
+	for _, e := range evs {
+		if keep(e) {
+			shown = append(shown, e)
+		}
+	}
+	if *n > 0 && len(shown) > *n {
+		shown = shown[len(shown)-*n:]
+	}
+	if len(shown) == 0 && !*follow {
+		fmt.Printf("no activity yet for %s\n", p.Root)
+	}
+	for _, e := range shown {
+		print(e)
+	}
+	for seen := len(evs); *follow; time.Sleep(500 * time.Millisecond) {
+		if evs, err = p.Events(); err != nil {
+			return err
+		}
+		for _, e := range evs[min(seen, len(evs)):] {
+			if keep(e) {
+				print(e)
+			}
+		}
+		seen = len(evs)
+	}
+	return nil
 }

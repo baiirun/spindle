@@ -1,13 +1,13 @@
 # spindle
 
-Durable, searchable context for agent work. spindle projects raw agent
-transcripts into evidence-linked episodes that a fresh agent can search and
-expand when it needs to continue work.
+Long-term project memory for Claude Code and Codex, through their hooks and an MCP server. Memories are typed
+Markdown files (user, directive, project, reference) with a MEMORY.md index, written by a background extraction
+pass after each turn, recalled per message by a side-model selector, and consolidated daily. See
+[docs/design.md](docs/design.md).
 
-- `sleep`: background projection of a completed or idle session
-- `resume`: warm-start from a known prior session's latest usable handoff
-- `wake`, `search`, `read`, `related`: cold-start discovery and evidence expansion
-- `dream`: future consolidation across episodes, only when needed
+    go build -o spin ./cmd/spin
+    ./spin install claude   # or codex: prints the hook and MCP config to merge
+    ./spin status           # what the current project remembers
+    ./spin log -f           # follow recalls, saves and memory tool calls as they happen
 
-Status: pre-alpha. The first goal is a real end-to-end continuation loop; see
-[the episode contract](docs/episodes.md).
+Status: prototype. Unit-tested, and checked once end to end with `claude -p`.
