@@ -1,0 +1,138 @@
+package memory
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"spindle/internal/model"
+	"spindle/internal/transcript"
+)
+
+// Dreaming is Claude Code's auto_dream: at most once a day, after enough
+// sessions, a pass over all of a project's memories that merges duplicates,
+// fixes what recent sessions contradicted, and prunes. Neither tool has a
+// scheduled hook, so the worker checks the gate after each drain.
+
+const (
+	DreamEvery    = 24 * time.Hour
+	DreamSessions = 5
+	dreamSignal   = 120_000 // characters of recent messages given to the dream
+)
+
+// DreamDue reports whether the gate is open.
+func DreamDue(s State, now time.Time) bool {
+	return len(s.Sessions) >= DreamSessions && (s.LastDream.IsZero() || now.Sub(s.LastDream) >= DreamEvery)
+}
+
+// DreamResult says what a dream did.
+type DreamResult struct {
+	Result
+	Summary string
+}
+
+// Dream runs one pass and resets the gate.
+func Dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
+	var res DreamResult
+	if err := p.Init(); err != nil {
+		return res, err
+	}
+	state, err := p.LoadState()
+	if err != nil {
+		return res, err
+	}
+	mems, err := p.Load()
+	if err != nil {
+		return res, err
+	}
+	var b strings.Builder
+	b.WriteString("## Memory files\n\n")
+	if len(mems) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, mem := range mems {
+		fmt.Fprintf(&b, "<file name=%q modified=%q>\n%s</file>\n\n", mem.File(), mem.Modified.UTC().Format(time.RFC3339), mem.Render())
+	}
+	b.WriteString("## Instruction files\n\n")
+	found := false
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md", filepath.Join(".claude", "CLAUDE.md")} {
+		if text, err := os.ReadFile(filepath.Join(p.Root, name)); err == nil {
+			found = true
+			fmt.Fprintf(&b, "<file name=%q>\n%s\n</file>\n\n", name, clipRunes(string(text), 20_000))
+		}
+	}
+	if !found {
+		b.WriteString("(none)\n\n")
+	}
+	fmt.Fprintf(&b, "## Messages from the %d sessions since the last dream\n\n%s", len(state.Sessions), recentSignal(state, dreamSignal))
+
+	var out struct {
+		Ops     []Op   `json:"ops"`
+		Summary string `json:"summary"`
+	}
+	if err := completeJSON(ctx, m, dreamSystem, b.String(), dreamSchema, &out); err != nil {
+		return res, fmt.Errorf("dream: %w", err)
+	}
+	unlock, err := p.Lock()
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
+	if res.Result, err = p.Apply(out.Ops, "dream", "", now); err != nil {
+		return res, err
+	}
+	res.Summary = out.Summary
+	if state, err = p.LoadState(); err != nil {
+		return res, err
+	}
+	state.LastDream, state.Sessions = now.UTC(), map[string]string{}
+	if err := p.SaveState(state); err != nil {
+		return res, err
+	}
+	return res, appendJSONL(filepath.Join(p.Dir, "dreams.jsonl"), []map[string]any{{"at": now.UTC(), "summary": out.Summary, "written": res.Written, "deleted": res.Deleted}})
+}
+
+// recentSignal renders the messages since the last dream, newest sessions
+// first, within n characters.
+func recentSignal(s State, n int) string {
+	type sess struct {
+		id   string
+		msgs []transcript.Message
+	}
+	var all []sess
+	for id, path := range s.Sessions {
+		t, err := transcript.Read(path)
+		if err != nil {
+			continue
+		}
+		var msgs []transcript.Message
+		for _, m := range t.Messages {
+			if m.Time.After(s.LastDream) {
+				msgs = append(msgs, m)
+			}
+		}
+		if len(msgs) > 0 {
+			all = append(all, sess{id, msgs})
+		}
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].msgs[len(all[i].msgs)-1].Time.After(all[j].msgs[len(all[j].msgs)-1].Time)
+	})
+	var b strings.Builder
+	for _, x := range all {
+		block := fmt.Sprintf("### Session %s\n\n%s", x.id, transcript.Render(x.msgs, 2_000))
+		if b.Len()+len(block) > n {
+			left := n - b.Len()
+			if left < 2_000 {
+				break
+			}
+			block = "…" + block[len(block)-left:] // keep the session's latest messages
+		}
+		b.WriteString(block)
+	}
+	return orNone(b.String())
+}
