@@ -531,3 +531,63 @@ func tryLock(f *os.File) bool {
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return true
 }
+
+// A session no hook reported, such as one whose hooks weren't installed, is
+// found by the sweep the hourly dream check runs, extracted, and counted.
+func TestSweepFindsHooklessSession(t *testing.T) {
+	w := newWorld(t)
+	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
+	w.answer("write", deployOps)
+	home := ""
+	for _, e := range w.env {
+		if v, ok := strings.CutPrefix(e, "HOME="); ok {
+			home = v
+		}
+	}
+	if out := w.spin(w.work, "", "dream", "--due"); !strings.Contains(out, "nothing due") {
+		t.Fatalf("dream --due: %s", out)
+	}
+	if got := strings.Join(w.calls(), ","); got != "" {
+		t.Fatalf("the first sweep read old sessions: %s", got)
+	}
+	// Move the marks back, as if the first sweep ran an hour ago, and leave
+	// a settled transcript that changed since.
+	marks := map[string]map[string]any{}
+	b, _ := os.ReadFile(filepath.Join(w.home, "sweeps.json"))
+	json.Unmarshal(b, &marks)
+	for _, m := range marks {
+		m["swept"] = time.Now().Add(-time.Hour).UTC()
+	}
+	b, _ = json.Marshal(marks)
+	os.WriteFile(filepath.Join(w.home, "sweeps.json"), b, 0o644)
+	dir := filepath.Join(home, ".claude", "projects", "-work")
+	os.MkdirAll(filepath.Join(dir, "s9", "subagents"), 0o755)
+	tp := filepath.Join(dir, "s9.jsonl")
+	claudeTranscript(t, tp, "s9", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
+	sub := filepath.Join(dir, "s9", "subagents", "agent-1.jsonl")
+	claudeTranscript(t, sub, "s9", w.work, "A subagent's long task description, which is not the user talking.", "Done.")
+	old := time.Now().Add(-20 * time.Minute)
+	os.Chtimes(tp, old, old)
+	os.Chtimes(sub, old, old)
+
+	w.spin(w.work, "", "dream", "--due")
+	if w.memory("proj", "deploy-pipeline") == "" {
+		t.Fatalf("the swept session wasn't extracted; calls %v", w.calls())
+	}
+	if got := strings.Join(w.calls(), ","); got != "codex_read,codex_write" {
+		t.Errorf("calls %s, want one pass", got)
+	}
+	state, _ := os.ReadFile(filepath.Join(w.home, "projects", "proj", "state.json"))
+	if !strings.Contains(string(state), tp) {
+		t.Errorf("the session didn't count toward the dream:\n%s", state)
+	}
+	out := w.spin(w.work, "", "sources")
+	if !strings.Contains(out, "claude-code ("+filepath.Join(home, ".claude", "projects")+")") || !strings.Contains(out, "1 sessions changed, 1 queued for extraction") {
+		t.Errorf("spin sources:\n%s", out)
+	}
+	// Read once, it isn't queued again.
+	w.spin(w.work, "", "dream", "--due")
+	if n := len(w.calls()); n != 2 {
+		t.Errorf("a read session was extracted again: %v", w.calls())
+	}
+}

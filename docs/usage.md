@@ -71,6 +71,7 @@ project, then in global, then in any project that has it.
 | Command | What it does |
 |---|---|
 | `spin status` | This folder's project: memory counts by type, linked folders, dream gate; counts for global and the rest; the latest transcript cursors. |
+| `spin sources` | Where sessions come from, the folder each source reads, and its last sweep. |
 | `spin projects` | Every project with its memory count, description and folders. `*` marks this folder's. |
 | `spin project NAME [--description D] [--link DIR] [--unlink DIR]` | Create or describe a project, link or unlink a folder. `--link .` is this repository's root. |
 | `spin index` | What a session here starts with: this project's index, global, a line per other project. |
@@ -79,9 +80,9 @@ project, then in global, then in any project that has it.
 | `spin write [--type T] [--description D] [--global] NAME < body.md` | Create or replace a memory; the body comes from stdin. `NAME` may be `project/name`; `--global` saves to global. Type and description can be left out when updating. |
 | `spin rm [--reason WHY] NAME` | Delete a memory. |
 | `spin history [--full] [--restore N] NAME` | Every change to a memory, newest first. `--full` shows the old text; `--restore N` puts back the version change N replaced or deleted. |
-| `spin log [-f] [-n N] [--session S] [--kind K] [--project P] [--json]` | The activity log across projects. `-f` follows it. Kinds: start, select, recall, skip, call, extract, dream. |
+| `spin log [-f] [-n N] [--session S] [--kind K] [--project P] [--json]` | The activity log across projects. `-f` follows it. Kinds: start, select, recall, skip, call, extract, sweep, dream. |
 | `spin dream [--force]` | Dream this folder's project, if its gate is open (`--force`: anyway). |
-| `spin dream --due` | Dream every store whose gate is open. The schedule runs this. |
+| `spin dream --due` | Sweep the sources and extract what they found, then dream every store whose gate is open. The schedule runs this. |
 | `spin extract TRANSCRIPT` | Run one extraction pass over a transcript now. The project comes from the transcript's folder. |
 | `spin install claude\|codex\|launchd [--bin PATH]` | Print config to merge by hand. Nothing is written. |
 
@@ -91,12 +92,30 @@ Hooks and background work call these; you don't run them yourself:
 |---|---|
 | `spin hook --agent claude\|codex` | Every hook event, with the event JSON on stdin |
 | `spin mcp --agent claude\|codex` | The agent, as its MCP server |
-| `spin worker [--no-dream]` | The `Stop`, `PreCompact` and `SessionEnd` hooks, to drain the extraction queue |
+| `spin worker [--no-dream]` | The `Stop`, `PreCompact` and `SessionEnd` hooks, to sweep the sources and drain the extraction queue |
 | `spin select --session S --id ID --agent A` | The `UserPromptSubmit` hook, to run the recall selector |
 
 The MCP tools match the CLI: `memory_read`, `memory_write`, `memory_delete`, `memory_search`, `memory_index`,
-`memory_status`, `memory_projects`, `memory_project`, `memory_dream` (starts a forced dream in the background),
+`memory_status`, `memory_sources`, `memory_projects`, `memory_project`, `memory_dream` (starts a forced dream in the background),
 `memory_log` and `memory_history`.
+
+## Sources
+
+Spindle learns from the sessions its sources list. Without a `sources.json` it reads the two local tools:
+
+```json
+{"sources": [{"kind": "claude-code"}, {"kind": "codex"}]}
+```
+
+| Kind | Reads | Default folder |
+|---|---|---|
+| `claude-code` | Claude Code transcripts, leaving out `subagents/` folders | `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` if set) |
+| `codex` | Codex rollouts | `~/.codex/sessions` (`$CODEX_HOME/sessions` if set) |
+
+`"dir"` on an entry reads another folder. A source left out isn't swept; `{"sources": []}` turns sweeping off, and
+hooks still queue their own sessions. Hooks report a session within seconds of each turn. The sweep finds the
+sessions no hook reported, once they have been quiet for 10 minutes. A new source's first sweep only marks where
+it starts, so adding one never reads its whole history.
 
 ## Settings
 
@@ -130,7 +149,9 @@ projects/<name>/            one project's store
   dreams.jsonl              each dream's summary
   lock, dream.lock          flocks
 events.jsonl                activity log, all projects
-cursors.json                how far extraction has read each transcript
+cursors.json                how far extraction has read each session
+sources.json                where sessions come from (optional; see Sources)
+sweeps.json                 how far each source has been swept
 recall/<session>.json       what a session was shown, and its pending pick
 queue/                      extraction jobs waiting for the worker
 hooks.log                   hook errors (hooks never fail a session)
@@ -163,7 +184,7 @@ it took, each save and tool call, and each extraction or dream. It also shows an
 
 | Symptom | Check |
 |---|---|
-| Nothing in `spin log` for a session | The hooks aren't running. Look at `hooks.log`. In Codex, check that the hooks are trusted (`/hooks` in the CLI). Cloud sessions such as claude.ai project threads never run your local hooks. |
+| Nothing in `spin log` for a session | The hooks aren't running. Look at `hooks.log`. In Codex, check that the hooks are trusted (`/hooks` in the CLI). The hourly sweep still finds the session once it's been quiet for 10 minutes; `spin sources` shows the last sweep. Cloud sessions such as claude.ai project threads have no source yet. |
 | Recall never picks anything | `spin log --kind select` shows the picks and errors. A one-word prompt, no memories, or the session's 61,440-byte recall budget all skip recall, and `skip` events say which. |
 | Picks show up a turn late | The selector took longer than `SPINDLE_RECALL_WAIT`, so the picks were attached after the next tool call. This is expected. A turn with no tool call drops them, and a `skip` event says so. |
 | Nothing gets saved after a session | `spin log --kind extract` and `--kind skip`. Extraction skips turns where the user wrote under 20 characters and turns where the agent already saved memory itself. |

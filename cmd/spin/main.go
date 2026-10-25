@@ -29,6 +29,7 @@ const usage = `usage: spin <command> [flags]
   hook      handle one Claude Code or Codex hook event (JSON on stdin)
   mcp       serve the memory tools over stdio
   status    this folder's project: how many memories, last dream; counts for the rest
+  sources   where sessions come from (Claude Code, Codex) and when each was last swept
   projects  list every project with its folders and memory count
   project   create or describe a project, link or unlink a folder
   show      print one memory in full
@@ -39,9 +40,9 @@ const usage = `usage: spin <command> [flags]
   history   one memory's changes, who made them and the text before (--restore N puts one back)
   log       show memory activity across projects: recalls, saves, tool calls (-f to follow)
   install   print the hook and MCP config for claude or codex, or the dream schedule (launchd)
-  dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate; --due runs every due project)
+  dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate; --due sweeps, then runs every due project)
   extract   run extraction on one transcript now
-  worker    drain the extraction queue (hooks start it)
+  worker    sweep the sources and drain the extraction queue (hooks start it)
   select    run the recall selector for a pending message (hooks start it)
 `
 
@@ -73,6 +74,8 @@ func run(home, cmd string, args []string) error {
 		return runMCP(home, args)
 	case "status":
 		return runStatus(home, args)
+	case "sources":
+		return runSources(home, args)
 	case "projects":
 		return runProjects(home, args)
 	case "project":
@@ -255,6 +258,22 @@ func runStatus(home string, args []string) error {
 	return nil
 }
 
+func runSources(home string, args []string) error {
+	fs := flag.NewFlagSet("sources", flag.ExitOnError)
+	dir := projectFlag(fs)
+	fs.Parse(args)
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
+	}
+	out, err := c.Sources()
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
+}
+
 func runShow(home string, args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	dir := projectFlag(fs)
@@ -410,6 +429,11 @@ func runDream(home string, args []string) error {
 	if *due {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		// Sessions no hook reported, such as ones from hookless sources, are
+		// swept and extracted first, so they count toward this check.
+		if err := memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoDream: true}); err != nil {
+			fmt.Println("worker:", err)
+		}
 		if n := memory.DreamDueStores(ctx, home, m, time.Now(), os.Stdout); n == 0 {
 			fmt.Println("nothing due")
 		}

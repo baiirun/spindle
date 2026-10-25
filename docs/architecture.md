@@ -20,7 +20,7 @@ internal/hooks     internal/memory.Client  ◄── spin show/write/search/... 
                  spin select / spin worker / spin dream --due   (detached processes, launchd)
                          │
                  internal/model ──► claude -p  |  codex exec
-                 internal/transcript (reads both tools' transcripts)
+                 internal/source ──► internal/transcript (finds and reads sessions)
 ```
 
 | Package | Job |
@@ -30,6 +30,7 @@ internal/hooks     internal/memory.Client  ◄── spin show/write/search/... 
 | `internal/mcp` | A minimal stdio MCP server, and the memory tools as thin wrappers over `memory.Client`. |
 | `internal/memory` | Stores, projects, refs, recall, extraction, dreaming, the queue and worker, logs, prompts. |
 | `internal/model` | Side-model calls through the `claude` and `codex` CLIs, and the Codex-then-Claude fallback. |
+| `internal/source` | The places sessions come from: lists the sessions each one has that changed, and reads one session. |
 | `internal/transcript` | Reads Claude Code and Codex transcripts into one list of user and assistant messages, leaving out tool calls and injected text. |
 
 Hooks never wait on a model except the prompt hook's short wait for recall. Anything slow runs in a detached
@@ -112,14 +113,35 @@ An attachment starts with "Retrieved for possible relevance". Each file is cut a
 carries a "This memory is N days old" warning, so the agent checks it against what it sees now. A file is shown at most once per session.
 `SPINDLE_RECALL=local` swaps the model for word-overlap matching in the hook itself.
 
+## Sources
+
+A source is one place sessions live. It does two things: list its sessions that changed between two times, and
+read one session as user and assistant messages. Each message's `Line` is its position in the session and only
+grows, so a cursor is a number for every source. A session is known by its location, which for the local sources
+is the transcript's path.
+
+| Kind | Lists | Leaves out |
+|---|---|---|
+| `claude-code` | `*.jsonl` under `~/.claude/projects`, by modified time | `subagents/` folders |
+| `codex` | `*.jsonl` under `~/.codex/sessions`, by modified time | |
+
+`sources.json` lists the sources; without it, both are read.
+
+**The sweep.** Each worker run starts with one. For each source it lists the sessions that changed after the
+source's mark (in `sweeps.json`) and up to 10 minutes ago, so a session still going is left to its hooks. A
+session already read after its last change is passed over. The rest are read, and those with messages past their
+cursor are queued as jobs. The mark then moves up. A new source's first sweep only sets its mark. A source that
+fails keeps its mark, so the next sweep tries the same window, and the others go on.
+
 ## Extraction
 
-`Stop`, `PreCompact` and `SessionEnd` write a job (agent, session, transcript, folder, the project at that moment)
-to `queue/` and start `spin worker`. Only one worker runs at a time (`worker.lock`). A worker that finds the lock
-held exits, and the running one picks up the new job, because it reads the queue until it is empty. Several jobs
-for one transcript make one pass.
+Jobs come from two places. `Stop`, `PreCompact` and `SessionEnd` write a job (agent, session, transcript, folder,
+the project at that moment) to `queue/` and start `spin worker`, so a local turn is read within seconds. The sweep
+writes jobs for the sessions no hook reported, with the folder the transcript records. Only one worker runs at a
+time (`worker.lock`). A worker that finds the lock held exits, and the running one picks up the new job, because
+it reads the queue until it is empty. Several jobs for one transcript make one pass.
 
-A pass reads the transcript's messages after its cursor in `cursors.json`. It skips when:
+A pass reads the session through its source, and takes the messages after its cursor in `cursors.json`. It skips when:
 
 - there are no new messages;
 - the new user text is under 20 characters;
@@ -145,7 +167,8 @@ reconcile against the instruction files. The model is given:
 
 - every memory file in the store;
 - `CLAUDE.md`, `AGENTS.md` and `.claude/CLAUDE.md` from the project's first linked folder;
-- recent messages from the sessions counted since the last dream, newest sessions first, up to 120,000 characters.
+- recent messages from the sessions counted since the last dream, read through their sources, newest sessions
+  first, up to 120,000 characters.
 
 It returns write and delete ops plus a summary. Code applies the ops to that store only, resets the gate, and
 appends the summary to `dreams.jsonl`.
@@ -155,7 +178,7 @@ appends the summary to `dreams.jsonl`.
 
 **When it's checked:**
 
-- hourly, by the launchd job (`spin dream --due`);
+- hourly, by the launchd job (`spin dream --due`), after a worker run that sweeps the sources;
 - at the end of every worker run.
 
 **Running one by hand:** `spin dream --force`, or `memory_dream`, which starts `spin dream --force` in the
@@ -182,7 +205,7 @@ isn't. `SPINDLE_BACKEND` pins one CLI for every role, with no fallback.
 ## Logs
 
 - `events.jsonl` at the home records what memory did, for people reading along. Each line names the session's
-  project. Kinds are start, select, recall, skip, call (an MCP or CLI call, with its caller), extract and dream.
+  project. Kinds are start, select, recall, skip, call (an MCP or CLI call, with its caller), extract, sweep and dream.
   Nothing reads it back into context.
 - `changes.jsonl` in each store is the audit trail behind `history` and `--restore`.
 
@@ -192,7 +215,7 @@ isn't. `SPINDLE_BACKEND` pins one CLI for every role, with no fallback.
 |---|---|---|
 | `<store>/lock` | anything changing a store's memories, `project.json` or `state.json` | waits |
 | `<store>/dream.lock` | a running dream | non-blocking |
-| `worker.lock` | the running worker | non-blocking |
+| `worker.lock` | the running worker, and with it every sweep and `sweeps.json` | non-blocking |
 | `cursors.lock` | updates to `cursors.json` | waits |
 | `recall/<session>.json.lock` | updates to one session's recall state | waits |
 | `migrate.lock` | upgrading stores written by an earlier version ([CHANGELOG](../CHANGELOG.md)) | waits |

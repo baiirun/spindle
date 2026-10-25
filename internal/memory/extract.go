@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"spindle/internal/model"
+	"spindle/internal/source"
 	"spindle/internal/transcript"
 )
 
@@ -24,7 +25,8 @@ type Cursor struct {
 // State is a store's dream gate.
 type State struct {
 	LastDream time.Time `json:"last_dream"`
-	// Sessions that touched the store since the last dream, with their transcripts.
+	// Sessions that touched the store since the last dream, with where their
+	// source reads them.
 	Sessions map[string]string `json:"sessions_since_dream"`
 }
 
@@ -107,7 +109,7 @@ type ExtractResult struct {
 // folder. Model calls run without locks; each store's writes take its lock.
 func Extract(ctx context.Context, p Project, path string, m model.Model, now time.Time) (ExtractResult, error) {
 	var res ExtractResult
-	s, err := transcript.Read(path)
+	s, err := source.Read(ctx, path)
 	if err != nil {
 		return res, err
 	}

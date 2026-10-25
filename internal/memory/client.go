@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"spindle/internal/model"
+	"spindle/internal/source"
 )
 
 // Client is the one way in to memory for anything outside the hooks: the
@@ -234,6 +235,23 @@ func (c Client) SetProject(name, description, link, unlink string) (string, erro
 	}()
 	c.log(ctx, "project", nil, "", s.Name, start, err)
 	return msg, err
+}
+
+// Sources lists the configured sources and how far each has been swept.
+func (c Client) Sources() (string, error) {
+	start := time.Now()
+	p := c.Context()
+	srcs, cfgErr := source.Load(c.Home)
+	marks, err := Marks(c.Home)
+	c.log(p, "sources", nil, "", "", start, err)
+	if err != nil {
+		return "", err
+	}
+	var infos []SourceInfo
+	for _, src := range srcs {
+		infos = append(infos, sourceInfo(src, marks))
+	}
+	return FormatSources(source.ConfigPath(c.Home), infos, cfgErr), nil
 }
 
 func (c Client) log(p Project, op string, files []string, query, note string, start time.Time, err error) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"spindle/internal/model"
+	"spindle/internal/source"
 	"spindle/internal/transcript"
 )
 
@@ -101,7 +102,7 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 	if p.IsGlobal() {
 		b.WriteString(globalSize(p))
 	}
-	fmt.Fprintf(&b, "## Messages from the %d sessions since the last dream\n\n%s", len(state.Sessions), recentSignal(state, dreamSignal))
+	fmt.Fprintf(&b, "## Messages from the %d sessions since the last dream\n\n%s", len(state.Sessions), recentSignal(ctx, state, dreamSignal))
 
 	var out struct {
 		Ops     []Op   `json:"ops"`
@@ -166,14 +167,14 @@ func globalSize(g Project) string {
 
 // recentSignal renders the messages since the last dream, newest sessions
 // first, within n characters.
-func recentSignal(s State, n int) string {
+func recentSignal(ctx context.Context, s State, n int) string {
 	type sess struct {
 		id   string
 		msgs []transcript.Message
 	}
 	var all []sess
-	for id, path := range s.Sessions {
-		t, err := transcript.Read(path)
+	for id, loc := range s.Sessions {
+		t, err := source.Read(ctx, loc)
 		if err != nil {
 			continue
 		}

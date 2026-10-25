@@ -141,6 +141,14 @@ func MemoryTools(c memory.Client, startDream func() error) []Tool {
 			},
 		},
 		{
+			Name:        "memory_sources",
+			Description: "Where memory finds sessions to learn from (Claude Code, Codex, ...), and when each was last swept. For when the user asks why a session wasn't picked up.",
+			InputSchema: schema(`{"type":"object","properties":{}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				return c.Sources()
+			},
+		},
+		{
 			Name: "memory_dream",
 			Description: "Start consolidating this folder's project's memory now: merge duplicates, fix what recent sessions contradicted, prune. " +
 				"It runs in the background for a few minutes; check memory_log for the result. Only when the user asks.",
@@ -161,7 +169,7 @@ func MemoryTools(c memory.Client, startDream func() error) []Tool {
 				"saves, deletes, skipped passes and dreams. For when the user asks about memory itself.",
 			InputSchema: schema(`{"type":"object","properties":{
 "session":{"type":"string","description":"only this session (a prefix is enough)"},
-"kind":{"type":"string","enum":["start","select","recall","skip","call","extract","dream"]},
+"kind":{"type":"string","enum":["start","select","recall","skip","call","extract","sweep","dream"]},
 "project":{"type":"string","description":"only sessions in this project"},
 "limit":{"type":"integer","description":"last n events, default 30"}}}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
