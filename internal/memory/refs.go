@@ -38,6 +38,18 @@ func (p Project) locate(ref string) (Project, string) {
 	if store != "" {
 		return Store(p.Home, store), name
 	}
+	if s, ok := p.find(name); ok {
+		return s, name
+	}
+	if p.Name != "" {
+		return p, name
+	}
+	return Store(p.Home, GlobalName), name
+}
+
+// find looks for a bare name in the session's project, then global, then any
+// project that has it.
+func (p Project) find(name string) (Project, bool) {
 	var tries []Project
 	if p.Name != "" {
 		tries = append(tries, p)
@@ -48,10 +60,10 @@ func (p Project) locate(ref string) (Project, string) {
 	}
 	for _, s := range tries {
 		if _, ok := s.Get(name); ok {
-			return s, name
+			return s, true
 		}
 	}
-	return tries[0], name
+	return Project{}, false
 }
 
 // GetRef reads one memory from any store; its Name is the reference.
@@ -85,8 +97,9 @@ func (p Project) LoadAll() ([]Memory, error) {
 
 // route picks the store a write or delete goes to, and strips the name to
 // its bare form. In order: a project in the name or in o.Project; the store
-// that already has the name (this project's, then global); global for type
-// user; this project. With no project for the folder, that last step fails.
+// that already has the name (this project's, then global, then any other
+// project, as locate looks it up); global for type user; this project. With
+// no project for the folder, that last step fails.
 func (p Project) route(o Op) (Project, Op, error) {
 	store, name := splitRef(o.Name)
 	o.Name = name
@@ -100,14 +113,11 @@ func (p Project) route(o Op) (Project, Op, error) {
 		s, _ := p.locate(name)
 		return s, o, nil
 	}
-	g := Store(p.Home, GlobalName)
-	if p.Name != "" {
-		if _, ok := p.Get(name); ok {
-			return p, o, nil
-		}
+	if s, ok := p.find(name); ok {
+		return s, o, nil
 	}
-	if _, ok := g.Get(name); ok || strings.TrimSpace(o.Type) == "user" {
-		return g, o, nil
+	if strings.TrimSpace(o.Type) == "user" {
+		return Store(p.Home, GlobalName), o, nil
 	}
 	if p.Name != "" {
 		return p, o, nil
