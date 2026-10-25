@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,8 +36,22 @@ type DreamResult struct {
 	Summary string
 }
 
-// Dream runs one pass and resets the gate.
+// ErrDreaming means another dream is running for the project.
+var ErrDreaming = errors.New("a dream is already running for this project")
+
+// Dream runs one pass and resets the gate. One dream runs at a time.
 func Dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
+	if err := p.Init(); err != nil {
+		return DreamResult{}, err
+	}
+	unlock, err := lockFile(filepath.Join(p.Dir, "dream.lock"), false)
+	if err == errLocked {
+		return DreamResult{}, ErrDreaming
+	}
+	if err != nil {
+		return DreamResult{}, err
+	}
+	defer unlock()
 	start := time.Now()
 	res, err := dream(ctx, p, m, now)
 	p.Log(Event{Kind: "dream", Files: res.Changed, Ms: time.Since(start).Milliseconds(), Note: res.Summary, Err: errString(err)})

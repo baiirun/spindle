@@ -3,21 +3,19 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
-	"time"
+	"errors"
 
 	"spindle/internal/memory"
 )
 
 // MemoryTools are the main agent's way into project memory. They replace
 // Claude Code's file tools on its memory folder, so the same instructions work
-// in Codex, whose sandbox may not reach ~/.spindle.
-//
-// Each call goes to the project's activity log; agent says which tool's
-// session is calling.
-func MemoryTools(p memory.Project, agent string) []Tool {
-	tools := []Tool{
+// in Codex, whose sandbox may not reach ~/.spindle. Each tool is a thin
+// wrapper over memory.Client, as the CLI's commands are; agent names the
+// caller in the activity log, and startDream starts a dream in the background.
+func MemoryTools(p memory.Project, agent string, startDream func() error) []Tool {
+	c := p.Client(agent)
+	return []Tool{
 		{
 			Name:        "memory_read",
 			Description: "Read one memory file in full, by name (as listed in the memory index).",
@@ -27,11 +25,11 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				m, ok := p.Get(a.Name)
-				if !ok {
-					return "", fmt.Errorf("no memory %q", memory.NameOf(a.Name))
+				m, err := c.Read(a.Name)
+				if err != nil {
+					return "", err
 				}
-				return fmt.Sprintf("Memory: %s (modified %s):\n\n%s", m.File(), m.Modified.UTC().Format("2006-01-02"), m.Render()), nil
+				return memory.FormatMemory(m), nil
 			},
 		},
 		{
@@ -49,8 +47,7 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 				if err := json.Unmarshal(raw, &o); err != nil {
 					return "", err
 				}
-				o.Op = "write"
-				return apply(p, o)
+				return c.Write(o)
 			},
 		},
 		{
@@ -58,12 +55,11 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 			Description: "Delete a memory that is wrong, outdated or that the user asked to forget.",
 			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"},"reason":{"type":"string"}},"required":["name","reason"]}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var o memory.Op
-				if err := json.Unmarshal(raw, &o); err != nil {
+				var a struct{ Name, Reason string }
+				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				o.Op = "delete"
-				return apply(p, o)
+				return c.Delete(a.Name, a.Reason)
 			},
 		},
 		{
@@ -78,17 +74,11 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				mems, err := p.Load()
+				hits, total, err := c.Search(a.Query, a.Limit)
 				if err != nil {
 					return "", err
 				}
-				hits := memory.Search(mems, a.Query, a.Limit)
-				var b strings.Builder
-				fmt.Fprintf(&b, "%d of %d memories match.\n", len(hits), len(mems))
-				for _, m := range hits {
-					fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", m.Type, m.File(), m.Modified.UTC().Format("2006-01-02"), m.Description)
-				}
-				return b.String(), nil
+				return memory.FormatSearch(hits, total), nil
 			},
 		},
 		{
@@ -96,63 +86,85 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 			Description: "The current memory index (MEMORY.md), in case it changed since the session started.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				if s := p.ReadIndex(); s != "" {
+				if s := c.Index(); s != "" {
 					return s, nil
 				}
 				return "(empty)", nil
 			},
 		},
+		{
+			Name:        "memory_status",
+			Description: "How many memories the project has by type, when memory was last consolidated, and how far each session has been read.",
+			InputSchema: schema(`{"type":"object","properties":{}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				s, err := c.Status()
+				if err != nil {
+					return "", err
+				}
+				return memory.FormatStatus(s), nil
+			},
+		},
+		{
+			Name: "memory_dream",
+			Description: "Start consolidating this project's memory now: merge duplicates, fix what recent sessions contradicted, prune. " +
+				"It runs in the background for a few minutes; check memory_log for the result. Only when the user asks.",
+			InputSchema: schema(`{"type":"object","properties":{}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				if startDream == nil {
+					return "", errors.New("dreaming is not available here")
+				}
+				if err := startDream(); err != nil {
+					return "", err
+				}
+				return "Dream started. It takes a few minutes; memory_log shows when it finishes and what it changed.", nil
+			},
+		},
+		{
+			Name: "memory_log",
+			Description: "What memory has been doing in this project: session starts, which memories were recalled for which messages, " +
+				"saves, deletes, skipped passes and dreams. For when the user asks about memory itself.",
+			InputSchema: schema(`{"type":"object","properties":{
+"session":{"type":"string","description":"only this session (a prefix is enough)"},
+"kind":{"type":"string","enum":["start","select","recall","skip","call","extract","dream"]},
+"limit":{"type":"integer","description":"last n events, default 30"}}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Session, Kind string
+					Limit         int
+				}
+				if len(raw) > 0 {
+					if err := json.Unmarshal(raw, &a); err != nil {
+						return "", err
+					}
+				}
+				if a.Limit <= 0 {
+					a.Limit = 30
+				}
+				evs, err := c.Activity(memory.LogFilter{Session: a.Session, Kind: a.Kind, Last: a.Limit})
+				if err != nil {
+					return "", err
+				}
+				return memory.FormatEvents(evs), nil
+			},
+		},
+		{
+			Name: "memory_history",
+			Description: "Every change to one memory, newest first: when, by whom (agent, cli, extract, dream), why, and the text before it. " +
+				"Old versions are superseded; never treat them as current. For when the user asks how a memory changed.",
+			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Name string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				hist, err := c.History(a.Name)
+				if err != nil {
+					return "", err
+				}
+				return memory.FormatHistory(a.Name, hist, true), nil
+			},
+		},
 	}
-	for i := range tools {
-		tools[i].Call = logged(p, agent, tools[i].Name, tools[i].Call)
-	}
-	return tools
-}
-
-// logged records a tool call: its name or query, what it touched, and errors.
-func logged(p memory.Project, agent, tool string, call func(context.Context, json.RawMessage) (string, error)) func(context.Context, json.RawMessage) (string, error) {
-	return func(ctx context.Context, raw json.RawMessage) (string, error) {
-		start := time.Now()
-		out, err := call(ctx, raw)
-		var a struct{ Name, Query, Reason string }
-		json.Unmarshal(raw, &a)
-		ev := memory.Event{Kind: "mcp", Agent: agent, Name: tool, Ms: time.Since(start).Milliseconds()}
-		if a.Name != "" {
-			ev.Files = []string{memory.NameOf(a.Name) + ".md"}
-		}
-		ev.Prompt, ev.Note = a.Query, a.Reason
-		if err != nil {
-			ev.Err = err.Error()
-		} else if tool == "memory_search" {
-			ev.Note = strings.SplitN(out, "\n", 2)[0]
-		}
-		p.Log(ev)
-		return out, err
-	}
-}
-
-func apply(p memory.Project, o memory.Op) (string, error) {
-	unlock, err := p.Lock()
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	res, err := p.Apply([]memory.Op{o}, "agent", "", time.Now())
-	if err != nil {
-		return "", err
-	}
-	name := memory.NameOf(o.Name)
-	switch {
-	case res.Written > 0:
-		return "Saved " + name + ".md.", nil
-	case res.Deleted > 0:
-		return "Deleted " + name + ".md.", nil
-	case o.Op == "delete":
-		return "", fmt.Errorf("no memory %q", name)
-	case res.Skipped > 0:
-		return "", fmt.Errorf("not saved: name, a valid type, description and body are all required")
-	}
-	return "Unchanged.", nil
 }
 
 func schema(s string) json.RawMessage {

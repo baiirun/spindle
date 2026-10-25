@@ -9,5 +9,6 @@ pass after each turn, recalled per message by a side-model selector, and consoli
     ./spin install claude   # or codex: prints the hook and MCP config to merge
     ./spin status           # what the current project remembers
     ./spin log -f           # follow recalls, saves and memory tool calls as they happen
+    ./spin search vet       # also: show, write, rm, index, history, dream
 
 Status: prototype. Unit-tested, and checked once end to end with `claude -p`.

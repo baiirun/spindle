@@ -12,7 +12,7 @@ import (
 // nothing reads it back into context.
 type Event struct {
 	At      time.Time `json:"at"`
-	Kind    string    `json:"kind"` // start, select, recall, skip, mcp, extract, dream
+	Kind    string    `json:"kind"` // start, select, recall, skip, call, extract, dream
 	Agent   string    `json:"agent,omitempty"`
 	Session string    `json:"session,omitempty"`
 	Name    string    `json:"name,omitempty"` // MCP tool, or what was skipped
@@ -64,7 +64,7 @@ func (e Event) String() string {
 	if e.Note != "" {
 		b.WriteString(" · " + e.Note)
 	}
-	if e.Ms > 0 {
+	if e.Ms >= 100 { // shorter is noise
 		fmt.Fprintf(&b, " (%.1fs)", float64(e.Ms)/1000)
 	}
 	if e.Err != "" {
