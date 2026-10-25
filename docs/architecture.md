@@ -41,8 +41,9 @@ A **store** is a folder of memories: `~/.spindle/global` or `~/.spindle/projects
 file there. Each store has a `MEMORY.md` index that code rebuilds after every change, grouped by type, newest first
 within a type, and capped at 200 lines and 25 KB.
 
-Everywhere outside a store, a memory is named by its **ref**, `<store>/<name>`. Reading a bare name tries the
-session's project, then global, then any project that has it.
+Everywhere outside a store, a memory is named by its **ref**, `<store>/<name>`. Reading or writing a bare name tries
+the session's project, then global, then any project that has it, so writing an existing name updates it where it
+is.
 
 A session's **context** is its folder, and the project that folder hints at. `memory.Hint` checks
 `SPINDLE_PROJECT` first, then the project with the deepest linked folder that contains the working directory.
