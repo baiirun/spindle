@@ -71,6 +71,18 @@ something.
 **Why:** people rarely stop to say "remember this". The useful signal is in ordinary conversation: corrections,
 confirmed approaches, decisions and their reasons. Running the pass in the background keeps the session fast.
 
+### Sessions come from sources
+
+A source is one place sessions live: Claude Code's transcripts, Codex's, and in time others. Each source does the
+same two jobs: list the sessions that changed, and read one session's messages. A file lists the sources spindle
+reads, and extraction and dreams read sessions only through them. Hooks say "this session just changed" so a
+local turn is read within seconds, and a sweep of every source finds the sessions no hook reported.
+
+**Why:** a person's work happens in many harnesses, and only some of them run hooks on their machine. Reading
+sessions where they live, through one small interface, lets spindle learn from all of them, and adding a harness
+means adding one source. A cursor per session means no message is read twice, and a new source starts from the
+day it's added, so it never reads its whole history at once.
+
 ### Memory is consolidated on a schedule
 
 Once a day at most, and only after enough new sessions, a deeper pass ("a dream") goes over one store as a whole.
@@ -148,5 +160,6 @@ design keeps spindle's behavior predictable to anyone who knows those tools.
 - **Ranking.** Should memories that are often recalled and used rank higher when the selector has more candidates
   than it can see?
 - **Size.** How should the selector cope past its 200 newest candidates as projects multiply?
-- **Reach.** How do cloud sessions, which run no local hooks, read and write memory? A git-backed store is one way.
+- **Reach.** Cloud sessions run no local hooks. A source can read them so memory learns from them; how they read
+  and write memory themselves is still open, and a git-backed store is one way.
 - **Quality.** How well do recall and extraction work? This needs measuring on real sessions.

@@ -64,6 +64,14 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
 24. **Every piece of state is a plain file under `~/.spindle`,** and `spin log` shows what memory did and why.
 25. **Earlier versions reach an agent only through `memory_history`,** which labels them as superseded.
 
+### Sessions
+
+26. **Spindle learns from the sessions its sources list.** A source lists its sessions that changed and reads one
+    session's messages. Extraction and dreams read sessions only through sources. `sources.json` says which sources
+    there are, and the CLI and MCP add and remove them.
+27. **A cursor is a position in a session, so no message is read twice.** A new source starts from the time it
+    was added, not from its history.
+
 ## Scope
 
 Spindle's job is long-term memory for one person's agents: remembering, recalling and consolidating what they
@@ -72,7 +80,7 @@ should know across sessions, tools and projects, on one machine. Neighbouring jo
 - **Instruction files** (CLAUDE.md, AGENTS.md) are maintained by people. They take precedence, and dreams bring
   memory in line with them.
 - **Plans and task lists** hold the work in progress.
-- **Transcripts** stay with the agent that wrote them. Spindle reads them to extract memories.
+- **Transcripts** stay with the agent that wrote them. Spindle reads them through sources and keeps only cursors.
 - **Recall** works from descriptions and a model selector.
 - **State** lives in plain files on the user's machine.
 
@@ -80,6 +88,7 @@ should know across sessions, tools and projects, on one machine. Neighbouring jo
 
 - [ ] Session start and recall stay within the context budget. `TestStartContext` and the recall tests check this.
 - [ ] Every read that should see all stores sees all of them.
+- [ ] Sessions are read through `internal/source`, and a new source's first sweep reads no history.
 - [ ] Every name shown to an agent or a person is a `<store>/<name>` ref.
 - [ ] Folder links and new projects come only from an explicit request.
 - [ ] Each new capability is in `memory.Client`, `spin` and the MCP tools, or the doc says why it's CLI-only.

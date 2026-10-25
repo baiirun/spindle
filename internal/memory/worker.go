@@ -12,14 +12,18 @@ import (
 	"time"
 
 	"spindle/internal/model"
+	"spindle/internal/source"
 )
 
-// Job asks the worker to run extraction for one transcript. Hooks only write
-// job files; every model call happens in the worker, so a hook never waits.
+// Job asks the worker to run extraction for one session. Hooks write one at
+// the end of each turn, and a sweep of the sources writes them for sessions
+// no hook reported. Every model call happens in the worker, so a hook never
+// waits.
 type Job struct {
 	Agent      string    `json:"agent"`
+	Source     string    `json:"source,omitempty"` // the source that found it; empty: a hook queued it
 	Session    string    `json:"session"`
-	Transcript string    `json:"transcript"`
+	Transcript string    `json:"transcript"` // where the session's source reads it
 	Cwd        string    `json:"cwd"`
 	Project    string    `json:"project,omitempty"` // the session's project when queued
 	Root       string    `json:"root,omitempty"`    // older jobs: the repository root
@@ -52,12 +56,15 @@ type WorkerOptions struct {
 	Models  Models
 	Log     io.Writer
 	NoDream bool
+	NoSweep bool
 	Now     func() time.Time
+	// Sources are swept before the queue is drained; nil reads sources.json.
+	Sources func() ([]source.Source, error)
 }
 
-// Work drains the queue and exits. One worker runs at a time; another finds
-// the lock held and leaves, and the running one picks up its jobs because it
-// reads the queue until it is empty.
+// Work sweeps the sources, drains the queue and exits. One worker runs at a
+// time; another finds the lock held and leaves, and the running one picks up
+// its jobs because it reads the queue until it is empty.
 func Work(ctx context.Context, home string, o WorkerOptions) error {
 	if o.Log == nil {
 		o.Log = io.Discard
@@ -68,9 +75,13 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 	if o.Models == nil {
 		o.Models = func(agent string, role model.Role) model.Model { return model.For(agent, role) }
 	}
+	if o.Sources == nil {
+		o.Sources = func() ([]source.Source, error) { return source.Load(home) }
+	}
 	if err := os.MkdirAll(queueDir(home), 0o755); err != nil {
 		return err
 	}
+	swept := o.NoSweep
 	for {
 		unlock, err := lockFile(filepath.Join(home, "worker.lock"), false)
 		if err == errLocked {
@@ -78,6 +89,10 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 		}
 		if err != nil {
 			return err
+		}
+		if !swept {
+			swept = true
+			sweep(ctx, home, o)
 		}
 		err = drain(ctx, home, o)
 		unlock()
@@ -136,6 +151,17 @@ func drain(ctx context.Context, home string, o WorkerOptions) error {
 	}
 	DreamDueStores(ctx, home, o.Models(agent, model.Dream), o.Now(), o.Log)
 	return nil
+}
+
+func sweep(ctx context.Context, home string, o WorkerOptions) {
+	srcs, err := o.Sources()
+	if err != nil {
+		fmt.Fprintf(o.Log, "%s sources: %v\n", stamp(o.Now()), err)
+		Project{Home: home}.Log(Event{Kind: "sweep", Err: err.Error()})
+	}
+	if err := Sweep(ctx, home, srcs, o.Now()); err != nil {
+		fmt.Fprintf(o.Log, "%s sweep: %v\n", stamp(o.Now()), err)
+	}
 }
 
 // DreamDueStores dreams every store whose gate is open. The scheduled run

@@ -18,7 +18,9 @@
 //	  state.json           dream gate: last dream, sessions since
 //	  lock                 flock held by every writer
 //	events.jsonl           activity log, all projects
-//	cursors.json           how far extraction has read each transcript
+//	cursors.json           how far extraction has read each session
+//	sources.json           where sessions come from (optional)
+//	sweeps.json            how far each source has been swept
 //	recall/<session>.json  what one session was shown, and its pending selection
 //	queue/                 extraction jobs
 package memory

@@ -438,6 +438,7 @@ func TestHookAlwaysExitsZero(t *testing.T) {
 	if log, _ := os.ReadFile(filepath.Join(w.home, "hooks.log")); !strings.Contains(string(log), "hook input") {
 		t.Errorf("bad input not logged:\n%s", log)
 	}
+	w.idle() // the Stop's worker writes to the home until it exits
 }
 
 // Invariant 15: hooks are fast even with a big memory and a hung selector.
@@ -530,4 +531,132 @@ func tryLock(f *os.File) bool {
 	}
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return true
+}
+
+// A session no hook reported, such as one whose hooks weren't installed, is
+// found by the sweep the hourly dream check runs, extracted, and counted.
+func TestSweepFindsHooklessSession(t *testing.T) {
+	w := newWorld(t)
+	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
+	w.answer("write", deployOps)
+	home := ""
+	for _, e := range w.env {
+		if v, ok := strings.CutPrefix(e, "HOME="); ok {
+			home = v
+		}
+	}
+	if out := w.spin(w.work, "", "dream", "--due"); !strings.Contains(out, "nothing due") {
+		t.Fatalf("dream --due: %s", out)
+	}
+	if got := strings.Join(w.calls(), ","); got != "" {
+		t.Fatalf("the first sweep read old sessions: %s", got)
+	}
+	// Move the marks back, as if the first sweep ran an hour ago, and leave
+	// a settled transcript that changed since.
+	marks := map[string]map[string]any{}
+	b, _ := os.ReadFile(filepath.Join(w.home, "sweeps.json"))
+	json.Unmarshal(b, &marks)
+	for _, m := range marks {
+		m["swept"] = time.Now().Add(-time.Hour).UTC()
+	}
+	b, _ = json.Marshal(marks)
+	os.WriteFile(filepath.Join(w.home, "sweeps.json"), b, 0o644)
+	dir := filepath.Join(home, ".claude", "projects", "-work")
+	os.MkdirAll(filepath.Join(dir, "s9", "subagents"), 0o755)
+	tp := filepath.Join(dir, "s9.jsonl")
+	claudeTranscript(t, tp, "s9", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
+	sub := filepath.Join(dir, "s9", "subagents", "agent-1.jsonl")
+	claudeTranscript(t, sub, "s9", w.work, "A subagent's long task description, which is not the user talking.", "Done.")
+	old := time.Now().Add(-20 * time.Minute)
+	os.Chtimes(tp, old, old)
+	os.Chtimes(sub, old, old)
+
+	w.spin(w.work, "", "dream", "--due")
+	if w.memory("proj", "deploy-pipeline") == "" {
+		t.Fatalf("the swept session wasn't extracted; calls %v", w.calls())
+	}
+	if got := strings.Join(w.calls(), ","); got != "codex_read,codex_write" {
+		t.Errorf("calls %s, want one pass", got)
+	}
+	state, _ := os.ReadFile(filepath.Join(w.home, "projects", "proj", "state.json"))
+	if !strings.Contains(string(state), tp) {
+		t.Errorf("the session didn't count toward the dream:\n%s", state)
+	}
+	out := w.spin(w.work, "", "sources")
+	if !strings.Contains(out, "claude-code ("+filepath.Join(home, ".claude", "projects")+")") || !strings.Contains(out, "1 sessions changed, 1 queued for extraction") {
+		t.Errorf("spin sources:\n%s", out)
+	}
+	// Read once, it isn't queued again.
+	w.spin(w.work, "", "dream", "--due")
+	if n := len(w.calls()); n != 2 {
+		t.Errorf("a read session was extracted again: %v", w.calls())
+	}
+}
+
+// Sources are added and removed from the CLI and MCP alike.
+func TestSourcesAddRemove(t *testing.T) {
+	cli, srv := newWorld(t), newWorld(t)
+	type step struct {
+		cli  []string
+		args map[string]any
+	}
+	steps := []step{
+		{[]string{"sources", "add", "claude-code", "--dir", "WORK/claude"}, map[string]any{"action": "add", "kind": "claude-code", "dir": "WORK/claude"}},
+		{[]string{"sources", "add", "codex", "--dir", "WORK/codex"}, map[string]any{"action": "add", "kind": "codex", "dir": "WORK/codex"}},
+		{[]string{"sources", "rm", "codex"}, map[string]any{"action": "remove", "kind": "codex"}},
+	}
+	var rpc []string
+	rpc = append(rpc, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`)
+	for i, s := range steps {
+		args := map[string]any{}
+		for k, v := range s.args {
+			args[k] = strings.ReplaceAll(fmt.Sprint(v), "WORK", srv.work)
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": "memory_source", "arguments": args}})
+		rpc = append(rpc, string(b))
+	}
+	out := srv.spin(srv.work, strings.Join(rpc, "\n")+"\n", "mcp", "--agent", "claude")
+	results := map[int]string{}
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		var r struct {
+			ID     int
+			Result struct{ Content []struct{ Text string } }
+		}
+		if json.Unmarshal(sc.Bytes(), &r) == nil && len(r.Result.Content) > 0 {
+			results[r.ID] = r.Result.Content[0].Text
+		}
+	}
+	var homes []string
+	for _, w := range []*world{cli, srv} {
+		for _, e := range w.env {
+			if v, ok := strings.CutPrefix(e, "HOME="); ok {
+				homes = append(homes, v)
+			}
+		}
+	}
+	norm := func(s string, w *world, home string) string {
+		return strings.TrimSpace(strings.NewReplacer(w.home, "SPINDLE", w.work, "WORK", home, "HOME").Replace(s))
+	}
+	for i, s := range steps {
+		args := make([]string, len(s.cli))
+		for j, a := range s.cli {
+			args[j] = strings.ReplaceAll(a, "WORK", cli.work)
+		}
+		c := norm(cli.spin(cli.work, "", args...), cli, homes[0])
+		m := norm(results[i+1], srv, homes[1])
+		if c != m {
+			t.Errorf("step %d:\nCLI:\n%s\nMCP:\n%s", i, c, m)
+		}
+	}
+	got := norm(cli.spin(cli.work, "", "sources"), cli, homes[0])
+	if !strings.Contains(got, "claude-code (WORK/claude)") || strings.Contains(got, "codex") {
+		t.Errorf("after the steps:\n%s", got)
+	}
+	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "rm", "codex"); code == 0 || !strings.Contains(errOut, `no source "codex"`) {
+		t.Errorf("removing a missing source: exit %d %s", code, errOut)
+	}
+	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "add", "nope"); code == 0 || !strings.Contains(errOut, "unknown source kind") {
+		t.Errorf("adding an unknown kind: exit %d %s", code, errOut)
+	}
 }
