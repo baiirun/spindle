@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -51,5 +52,46 @@ func TestClient(t *testing.T) {
 	want := "cli:write,codex:write,cli:read,cli:search,cli:index,cli:delete,cli:read"
 	if strings.Join(calls, ",") != want {
 		t.Errorf("events %v, want %s", calls, want)
+	}
+}
+
+func TestHistoryRestore(t *testing.T) {
+	p := project(t)
+	c := p.Client("cli")
+	c.Write(Op{Name: "rule", Type: "directive", Description: "First", Body: "Version one."})
+	c.Write(Op{Name: "rule", Body: "Version two."})
+	c.Delete("rule", "wrong")
+	hist, err := c.History("rule")
+	if err != nil || len(hist) != 3 || hist[0].Op != "delete" || hist[2].Old != "" {
+		t.Fatalf("history %+v %v", hist, err)
+	}
+	if out := FormatHistory("rule", hist, true); !strings.Contains(out, "1. ") || !strings.Contains(out, "deleted by cli: wrong") || !strings.Contains(out, "| Version two.") {
+		t.Errorf("format:\n%s", out)
+	}
+	if _, err := c.Restore("rule", 3); err == nil {
+		t.Error("restore before creation: want error")
+	}
+	if _, err := c.Restore("rule", 2); err != nil { // the version two replaced
+		t.Fatal(err)
+	}
+	if m, err := c.Read("rule"); err != nil || strings.TrimSpace(m.Body) != "Version one." || m.Description != "First" {
+		t.Errorf("restored %+v %v", m, err)
+	}
+	evs, _ := c.Activity(LogFilter{Kind: "call", Last: 2})
+	if len(evs) != 2 || evs[1].Name != "read" {
+		t.Errorf("activity %+v", evs)
+	}
+}
+
+func TestOneDreamAtATime(t *testing.T) {
+	p := project(t)
+	p.Init()
+	unlock, err := lockFile(p.Dir+"/dream.lock", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if _, err := p.Client("cli").Dream(context.Background(), nil, true); err != ErrDreaming {
+		t.Errorf("err %v, want ErrDreaming", err)
 	}
 }

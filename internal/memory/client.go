@@ -1,10 +1,14 @@
 package memory
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"spindle/internal/model"
 )
 
 // Client is the one way in to a project's memory for anything outside the
@@ -157,4 +161,134 @@ func FormatStatus(s Status) string {
 		fmt.Fprintf(&b, "cursor   %s line %d, %s (%s)\n", c.Agent, c.Line, c.At.Local().Format("2006-01-02 15:04"), path)
 	}
 	return b.String()
+}
+
+// Dream runs the consolidation pass now. Unless force is set it waits for the
+// gate (24 h and 5 sessions since the last dream).
+func (c Client) Dream(ctx context.Context, m model.Model, force bool) (DreamResult, error) {
+	st, err := c.LoadState()
+	if err != nil {
+		return DreamResult{}, err
+	}
+	if !force && !DreamDue(st, time.Now()) {
+		return DreamResult{}, fmt.Errorf("not due: %d of %d sessions since the last dream; --force to run anyway", len(st.Sessions), DreamSessions)
+	}
+	return Dream(ctx, c.Project, m, time.Now())
+}
+
+// Extract runs one extraction pass over a transcript now.
+func (c Client) Extract(ctx context.Context, transcript string, m model.Model) (ExtractResult, error) {
+	return Extract(ctx, c.Project, transcript, m, time.Now())
+}
+
+// LogFilter narrows the activity log.
+type LogFilter struct {
+	Session string // prefix
+	Kind    string
+	Last    int // 0: all
+}
+
+// Activity returns the activity log, oldest first, filtered.
+func (c Client) Activity(f LogFilter) ([]Event, error) {
+	evs, err := c.Events()
+	if err != nil {
+		return nil, err
+	}
+	var out []Event
+	for _, e := range evs {
+		if f.Match(e) {
+			out = append(out, e)
+		}
+	}
+	if f.Last > 0 && len(out) > f.Last {
+		out = out[len(out)-f.Last:]
+	}
+	return out, nil
+}
+
+func (f LogFilter) Match(e Event) bool {
+	return strings.HasPrefix(e.Session, f.Session) && (f.Kind == "" || e.Kind == f.Kind)
+}
+
+// History returns one memory's changes, newest first. Old versions are for
+// people auditing memory; they are never put into context on their own.
+func (c Client) History(name string) ([]Change, error) {
+	name = NameOf(name)
+	start := time.Now()
+	all, err := c.Changes()
+	var out []Change
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Name == name {
+			out = append(out, all[i])
+		}
+	}
+	c.log("history", []string{name + ".md"}, "", fmt.Sprintf("%d changes", len(out)), start, err)
+	return out, err
+}
+
+// Restore puts back the version a change replaced or deleted: n counts from 1
+// in History's order.
+func (c Client) Restore(name string, n int) (string, error) {
+	hist, err := c.History(name)
+	if err != nil {
+		return "", err
+	}
+	if n < 1 || n > len(hist) {
+		return "", fmt.Errorf("%s has %d changes; pick 1-%d", NameOf(name), len(hist), len(hist))
+	}
+	ch := hist[n-1]
+	if ch.Old == "" {
+		return "", errors.New("that change created the memory; there is no earlier version")
+	}
+	old, err := Parse(ch.Old)
+	if err != nil {
+		return "", err
+	}
+	return c.apply(Op{Op: "write", Name: old.Name, Type: old.Type, Description: old.Description, Body: old.Body,
+		Reason: fmt.Sprintf("restored the version before the %s of %s", ch.Op, ch.At.UTC().Format(time.RFC3339))})
+}
+
+func FormatEvents(evs []Event) string {
+	if len(evs) == 0 {
+		return "No activity.\n"
+	}
+	var b strings.Builder
+	for _, e := range evs {
+		b.WriteString(e.String() + "\n")
+	}
+	return b.String()
+}
+
+// FormatHistory lists changes; with full set it includes each old version.
+func FormatHistory(name string, hist []Change, full bool) string {
+	if len(hist) == 0 {
+		return fmt.Sprintf("No changes recorded for %s.\n", NameOf(name))
+	}
+	var b strings.Builder
+	for i, ch := range hist {
+		what := map[string]string{"write": "changed", "delete": "deleted"}[ch.Op]
+		if ch.Op == "write" && ch.Old == "" {
+			what = "created"
+		}
+		fmt.Fprintf(&b, "%d. %s  %s by %s", i+1, ch.At.Local().Format("2006-01-02 15:04"), what, ch.By)
+		if ch.Session != "" {
+			fmt.Fprintf(&b, " (session %s)", clipRunes(ch.Session, 8))
+		}
+		if ch.Reason != "" {
+			b.WriteString(": " + ch.Reason)
+		}
+		b.WriteString("\n")
+		if full && ch.Old != "" {
+			fmt.Fprintf(&b, "   before:\n%s\n", indent(ch.Old, "   | "))
+		}
+	}
+	return b.String()
+}
+
+func indent(s, prefix string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }

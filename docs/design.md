@@ -27,7 +27,7 @@ It follows Claude Code's auto memory, with one change of name.
 | After a tool call | `PostToolUse` | Attaches picks that arrived after the prompt went in. This is how Claude Code delivers them. |
 | Turn ends | `Stop`, async | Drops picks that never arrived, queues extraction and starts the worker. |
 | Before compaction, session end | `PreCompact`, `SessionEnd` | Queue extraction. |
-| Any time | MCP | `memory_read`, `memory_write`, `memory_delete`, `memory_search`, `memory_index`, `memory_status` |
+| Any time | MCP | `memory_read`, `memory_write`, `memory_delete`, `memory_search`, `memory_index`, `memory_status`, `memory_dream`, `memory_log`, `memory_history` |
 
 Recall keeps Claude Code's rules. One-word prompts are skipped. A file is shown at most once per session. Recall
 stops after 61,440 bytes in a session. Each file is cut at 4 KB. Files older than a day carry the "This memory is N
@@ -42,7 +42,12 @@ sandbox may not reach `~/.spindle`.
 The memory tools and the CLI are thin wrappers over one client (`memory.Client`): read, write, delete, search,
 index and status, with the same output text. So `spin show`, `spin write`, `spin rm`, `spin search`, `spin index`
 and `spin status` do what `memory_read`, `memory_write`, `memory_delete`, `memory_search`, `memory_index` and
-`memory_status` do, for people instead of agents. Writes from the CLI are logged as `cli`, and unlike the agent's,
+`memory_status` do, for people instead of agents. Both also have dream (`spin dream`, or `memory_dream`, which
+starts one in the background; one dream runs at a time), the activity log (`spin log`, `memory_log`) and a memory's
+history (`spin history NAME`, `memory_history`): every change with who made it, why and the text before.
+`spin history --restore N` puts back the version change N replaced or deleted. `spin extract` stays CLI-only,
+since the hooks run it after every turn. Old versions reach an agent only when it calls `memory_history`, and
+the tool marks them as superseded. Writes from the CLI are logged as `cli`, and unlike the agent's,
 they don't make extraction skip a session.
 
 ## Activity log
@@ -52,7 +57,7 @@ context. It gets one line per session start, recall pick (the prompt, what was p
 delivery (with the prompt or after a tool call), skipped recall or extraction and why, memory call (read,
 write, delete, search, index, with the caller: claude, codex or cli), extraction pass and dream. `spin log` prints it as
 readable lines; `-f` follows it, `--session` and `--kind` filter it and `--json` prints the raw lines. Saves and
-deletes also stay in `changes.jsonl` with the old and new text.
+deletes also stay in `changes.jsonl` with the old and new text, and `spin history` reads them.
 
 ## Extraction
 

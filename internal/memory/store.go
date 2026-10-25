@@ -272,7 +272,7 @@ type Change struct {
 	At      time.Time `json:"at"`
 	Op      string    `json:"op"`
 	Name    string    `json:"name"`
-	By      string    `json:"by"` // agent | extract | dream
+	By      string    `json:"by"` // agent | cli | extract | dream
 	Session string    `json:"session,omitempty"`
 	Reason  string    `json:"reason,omitempty"`
 	Old     string    `json:"old,omitempty"` // the file before the change
@@ -327,7 +327,7 @@ func (p Project) Apply(ops []Op, by, session string, now time.Time) (Result, err
 			}
 			res.Written++
 			res.Changed = append(res.Changed, "+"+name)
-			log = append(log, Change{At: now.UTC(), Op: "write", Name: name, By: by, Session: session, Old: old, New: text})
+			log = append(log, Change{At: now.UTC(), Op: "write", Name: name, By: by, Session: session, Reason: oneLine(o.Reason), Old: old, New: text})
 		case "delete":
 			if old == "" {
 				res.Skipped++

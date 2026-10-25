@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"spindle/internal/memory"
 )
@@ -11,8 +12,8 @@ import (
 // Claude Code's file tools on its memory folder, so the same instructions work
 // in Codex, whose sandbox may not reach ~/.spindle. Each tool is a thin
 // wrapper over memory.Client, as the CLI's commands are; agent names the
-// caller in the activity log.
-func MemoryTools(p memory.Project, agent string) []Tool {
+// caller in the activity log, and startDream starts a dream in the background.
+func MemoryTools(p memory.Project, agent string, startDream func() error) []Tool {
 	c := p.Client(agent)
 	return []Tool{
 		{
@@ -101,6 +102,66 @@ func MemoryTools(p memory.Project, agent string) []Tool {
 					return "", err
 				}
 				return memory.FormatStatus(s), nil
+			},
+		},
+		{
+			Name: "memory_dream",
+			Description: "Start consolidating this project's memory now: merge duplicates, fix what recent sessions contradicted, prune. " +
+				"It runs in the background for a few minutes; check memory_log for the result. Only when the user asks.",
+			InputSchema: schema(`{"type":"object","properties":{}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				if startDream == nil {
+					return "", errors.New("dreaming is not available here")
+				}
+				if err := startDream(); err != nil {
+					return "", err
+				}
+				return "Dream started. It takes a few minutes; memory_log shows when it finishes and what it changed.", nil
+			},
+		},
+		{
+			Name: "memory_log",
+			Description: "What memory has been doing in this project: session starts, which memories were recalled for which messages, " +
+				"saves, deletes, skipped passes and dreams. For when the user asks about memory itself.",
+			InputSchema: schema(`{"type":"object","properties":{
+"session":{"type":"string","description":"only this session (a prefix is enough)"},
+"kind":{"type":"string","enum":["start","select","recall","skip","call","extract","dream"]},
+"limit":{"type":"integer","description":"last n events, default 30"}}}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Session, Kind string
+					Limit         int
+				}
+				if len(raw) > 0 {
+					if err := json.Unmarshal(raw, &a); err != nil {
+						return "", err
+					}
+				}
+				if a.Limit <= 0 {
+					a.Limit = 30
+				}
+				evs, err := c.Activity(memory.LogFilter{Session: a.Session, Kind: a.Kind, Last: a.Limit})
+				if err != nil {
+					return "", err
+				}
+				return memory.FormatEvents(evs), nil
+			},
+		},
+		{
+			Name: "memory_history",
+			Description: "Every change to one memory, newest first: when, by whom (agent, cli, extract, dream), why, and the text before it. " +
+				"Old versions are superseded; never treat them as current. For when the user asks how a memory changed.",
+			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Name string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				hist, err := c.History(a.Name)
+				if err != nil {
+					return "", err
+				}
+				return memory.FormatHistory(a.Name, hist, true), nil
 			},
 		},
 	}

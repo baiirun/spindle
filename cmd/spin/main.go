@@ -33,6 +33,7 @@ const usage = `usage: spin <command> [flags]
   write     create or replace a memory (body on stdin)
   rm        delete a memory
   index     print MEMORY.md
+  history   one memory's changes, who made them and the text before (--restore N puts one back)
   log       show the project's memory activity: recalls, saves, tool calls (-f to follow)
   install   print the hook and MCP config for claude or codex
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
@@ -74,6 +75,8 @@ func run(home, cmd string, args []string) error {
 		return runRm(home, args)
 	case "index":
 		return runIndex(home, args)
+	case "history":
+		return runHistory(home, args)
 	case "log":
 		return runLog(home, args)
 	case "install":
@@ -152,7 +155,9 @@ func runMCP(home string, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent)}.Serve(ctx, os.Stdin, os.Stdout)
+	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent, func() error {
+		return spawn(home)("dream", "--project", p.Root, "--force", "--agent", orClaude(*agent))
+	})}.Serve(ctx, os.Stdin, os.Stdout)
 }
 
 // client resolves the project from --project or the working directory.
@@ -317,20 +322,12 @@ func runDream(home string, args []string) error {
 	force := fs.Bool("force", false, "run even if the gate is closed")
 	agent := fs.String("agent", "claude", "which CLI runs the model: claude or codex")
 	fs.Parse(args)
-	p, err := memory.Resolve(home, *dir)
+	c, err := client(home, *dir)
 	if err != nil {
 		return err
-	}
-	st, err := p.LoadState()
-	if err != nil {
-		return err
-	}
-	if !*force && !memory.DreamDue(st, time.Now()) {
-		fmt.Printf("not due: %d of %d sessions since the last dream; --force to run anyway\n", len(st.Sessions), memory.DreamSessions)
-		return nil
 	}
 	os.Setenv(memory.InnerEnv, "1")
-	res, err := memory.Dream(context.Background(), p, model.For(*agent, model.Dream), time.Now())
+	res, err := c.Dream(context.Background(), model.For(*agent, model.Dream), *force)
 	if err != nil {
 		return err
 	}
@@ -361,12 +358,12 @@ func runExtract(home string, args []string) error {
 			return err
 		}
 	}
-	p, err := memory.Resolve(home, root)
+	c, err := client(home, root)
 	if err != nil {
 		return err
 	}
 	os.Setenv(memory.InnerEnv, "1")
-	res, err := memory.Extract(context.Background(), p, path, model.For(agent, model.Extract), time.Now())
+	res, err := c.Extract(context.Background(), path, model.For(agent, model.Extract))
 	if err != nil {
 		return err
 	}
@@ -374,7 +371,7 @@ func runExtract(home string, args []string) error {
 		fmt.Println("skipped:", res.Skip)
 		return nil
 	}
-	fmt.Printf("%s: %d written, %d deleted, %d skipped\n", p.Name(), res.Written, res.Deleted, res.Result.Skipped)
+	fmt.Printf("%s: %d written, %d deleted, %d skipped\n", c.Name(), res.Written, res.Deleted, res.Result.Skipped)
 	return nil
 }
 
@@ -413,50 +410,84 @@ func runLog(home string, args []string) error {
 	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, call, extract, dream")
 	asJSON := fs.Bool("json", false, "print raw JSON lines")
 	fs.Parse(args)
-	p, err := memory.Resolve(home, *dir)
+	c, err := client(home, *dir)
 	if err != nil {
 		return err
 	}
-	keep := func(e memory.Event) bool {
-		return strings.HasPrefix(e.Session, *session) && (*kind == "" || e.Kind == *kind)
-	}
-	print := func(e memory.Event) {
-		if *asJSON {
+	f := memory.LogFilter{Session: *session, Kind: *kind, Last: *n}
+	print := func(evs []memory.Event) {
+		if !*asJSON {
+			fmt.Print(memory.FormatEvents(evs))
+			return
+		}
+		for _, e := range evs {
 			b, _ := json.Marshal(e)
 			fmt.Println(string(b))
-		} else {
-			fmt.Println(e)
 		}
 	}
-	evs, err := p.Events()
+	evs, err := c.Activity(f)
 	if err != nil {
 		return err
 	}
-	var shown []memory.Event
-	for _, e := range evs {
-		if keep(e) {
-			shown = append(shown, e)
+	if len(evs) > 0 || !*follow {
+		print(evs)
+	}
+	all, err := c.Activity(memory.LogFilter{})
+	for seen := len(all); *follow && err == nil; time.Sleep(500 * time.Millisecond) {
+		if all, err = c.Activity(memory.LogFilter{}); err != nil {
+			break
 		}
-	}
-	if *n > 0 && len(shown) > *n {
-		shown = shown[len(shown)-*n:]
-	}
-	if len(shown) == 0 && !*follow {
-		fmt.Printf("no activity yet for %s\n", p.Root)
-	}
-	for _, e := range shown {
-		print(e)
-	}
-	for seen := len(evs); *follow; time.Sleep(500 * time.Millisecond) {
-		if evs, err = p.Events(); err != nil {
-			return err
-		}
-		for _, e := range evs[min(seen, len(evs)):] {
-			if keep(e) {
-				print(e)
+		var fresh []memory.Event
+		for _, e := range all[min(seen, len(all)):] {
+			if f.Match(e) {
+				fresh = append(fresh, e)
 			}
 		}
-		seen = len(evs)
+		if len(fresh) > 0 {
+			print(fresh)
+		}
+		seen = len(all)
 	}
+	return err
+}
+
+func runHistory(home string, args []string) error {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	dir := projectFlag(fs)
+	full := fs.Bool("full", false, "show each earlier version's text")
+	restore := fs.Int("restore", 0, "put back the version change N replaced or deleted")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin history [--project DIR] [--full] [--restore N] NAME")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
+	}
+	if *restore > 0 {
+		msg, err := c.Restore(fs.Arg(0), *restore)
+		if err != nil {
+			return err
+		}
+		fmt.Println(msg)
+		return nil
+	}
+	hist, err := c.History(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	fmt.Print(memory.FormatHistory(fs.Arg(0), hist, *full))
 	return nil
+}
+
+func orClaude(agent string) string {
+	if agent == "codex" {
+		return agent
+	}
+	return "claude"
 }
