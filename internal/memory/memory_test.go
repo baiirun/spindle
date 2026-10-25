@@ -74,6 +74,13 @@ func TestHint(t *testing.T) {
 	if p, _ := Hint(home, root+"-sibling"); p.Name != "" {
 		t.Fatalf("sibling folder matched: %+v", p)
 	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	os.MkdirAll(filepath.Join(root, "linked"), 0o755)
+	os.Symlink(filepath.Join(root, "linked"), alias)
+	Store(home, "aliased").Link(alias)
+	if p, _ := Hint(home, filepath.Join(root, "linked")); p.Name != "aliased" {
+		t.Fatalf("folder linked through a symlink not matched by its real path: %+v", p)
+	}
 	t.Setenv(ProjectEnv, "Taxes")
 	if p, _ := Hint(home, root); p.Name != "taxes" {
 		t.Fatalf("override ignored: %+v", p)
