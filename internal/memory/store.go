@@ -34,6 +34,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // Types follow Claude Code's taxonomy, with "feedback" called "directive".
@@ -479,6 +480,18 @@ func clipRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// clipBytes cuts s to at most n bytes, backing up to a rune boundary so a
+// multi-byte character is never split.
+func clipBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func readJSONL[T any](path string) ([]T, error) {
