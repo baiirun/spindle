@@ -354,7 +354,7 @@ func (f LogFilter) Match(e Event) bool {
 // people auditing memory; they are never put into context on their own.
 func (c Client) History(name string) ([]Change, error) {
 	p := c.Context()
-	store, name := p.locate(name)
+	store, name := p.locateLogged(name)
 	start := time.Now()
 	all, err := store.Changes()
 	var out []Change
@@ -385,7 +385,7 @@ func (c Client) Restore(name string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	store, _ := c.Context().locate(name)
+	store, _ := c.Context().locateLogged(name)
 	return c.apply(Op{Op: "write", Name: RefOf(store, old.Name), Type: old.Type, Description: old.Description, Body: old.Body,
 		Reason: fmt.Sprintf("restored the version before the %s of %s", ch.Op, ch.At.UTC().Format(time.RFC3339))})
 }

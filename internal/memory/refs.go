@@ -66,6 +66,36 @@ func (p Project) find(name string) (Project, bool) {
 	return Project{}, false
 }
 
+// locateLogged is locate for a memory's history: a bare name that exists
+// nowhere (it was deleted) is looked up, in the same order, in each store's
+// change log.
+func (p Project) locateLogged(ref string) (Project, string) {
+	s, name := p.locate(ref)
+	if store, _ := splitRef(ref); store != "" {
+		return s, name
+	}
+	if _, ok := s.Get(name); ok {
+		return s, name
+	}
+	var tries []Project
+	if p.Name != "" {
+		tries = append(tries, p)
+	}
+	tries = append(tries, Store(p.Home, GlobalName))
+	if all, err := Projects(p.Home); err == nil {
+		tries = append(tries, all...)
+	}
+	for _, t := range tries {
+		changes, _ := t.Changes()
+		for _, c := range changes {
+			if c.Name == name {
+				return t, name
+			}
+		}
+	}
+	return s, name
+}
+
 // GetRef reads one memory from any store; its Name is the reference.
 func (p Project) GetRef(ref string) (Memory, bool) {
 	s, name := p.locate(ref)
