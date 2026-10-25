@@ -24,6 +24,9 @@ commands:
   related  follow explicit episode continuation links
   decisions search a decision record (eval: the two-part ledger kept out of the prompt)
   dream    fold a project's episodes into project memory (working state, history, superseded)
+  hook     handle a Claude Code or Codex hook event (stdin JSON); see docs/hooks.md
+  mcp      serve the project memory tools over stdio (MCP)
+  memory   status | now | search | fold | worker | dream | install
   snapshot build a leak-free view of spindle data before a time (for trials)
   eval     mine | label | run | report | continue
 `
@@ -57,6 +60,12 @@ func main() {
 		err = runDecisions(os.Args[2:])
 	case "dream":
 		err = runDream(os.Args[2:])
+	case "hook":
+		err = runHook(os.Args[2:])
+	case "mcp":
+		err = runMCP(os.Args[2:])
+	case "memory":
+		err = runMemory(os.Args[2:])
 	case "snapshot":
 		err = runSnapshot(os.Args[2:])
 	case "eval":

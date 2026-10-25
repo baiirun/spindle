@@ -8,6 +8,8 @@ expand when it needs to continue work.
 - `resume`: warm-start from a known prior session's latest usable handoff
 - `wake`, `search`, `read`, `related`: cold-start discovery and evidence expansion
 - `dream`: future consolidation across episodes, only when needed
+- `hook`, `mcp`, `memory`: live project memory for Claude Code and Codex
+  sessions through hooks and MCP tools; see [hooks](docs/hooks.md)
 
 Status: pre-alpha. The first goal is a real end-to-end continuation loop; see
 [the episode contract](docs/episodes.md).

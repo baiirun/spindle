@@ -157,3 +157,6 @@ ledger, and replace silent eviction with an explicit merge-or-drop step.
   entries now, but lost the Eldspire gain by recording fewer approved decisions; see `results.md`.
 - Open, not started: keep the supersession check and loosen the gate so short approvals of a specific proposal
   still count; build threads still lose a little with search; tokens double. Needs Byron's go-ahead.
+- Built 2026-10-25 (Byron asked for it on a branch): the design as live memory for Claude Code and Codex through
+  hooks and MCP (`docs/hooks.md`). It uses the searchable record v1 and the Now part, plus a dream pass that marks
+  overtaken entries. Unit-tested only; not run on a real session or scored.
