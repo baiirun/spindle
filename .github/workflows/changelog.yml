@@ -1,0 +1,35 @@
+name: Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'no changelog') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: A PR that changes Go code adds a CHANGELOG.md entry
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE"...HEAD)
+          code=$(echo "$changed" | grep -E '(\.go|^go\.mod)$' | grep -v '_test\.go$' || true)
+          if [ -z "$code" ]; then
+            echo "No Go code changed."
+            exit 0
+          fi
+          if echo "$changed" | grep -qx CHANGELOG.md; then
+            echo "CHANGELOG.md updated."
+            exit 0
+          fi
+          echo "::error file=CHANGELOG.md::This PR changes Go code but not CHANGELOG.md. Add a line under Unreleased, or add the 'no changelog' label if nobody using spindle would notice the change."
+          echo "Changed code:"
+          echo "$code"
+          exit 1
