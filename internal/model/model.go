@@ -177,8 +177,13 @@ func (c Codex) Complete(ctx context.Context, system, prompt, schema string) (str
 			return "", err
 		}
 		defer os.Remove(f.Name())
-		f.WriteString(schema)
-		f.Close()
+		_, err = f.WriteString(schema)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return "", err
+		}
 		args = append(args, "--output-schema", f.Name())
 	}
 	args = append(args, "-")

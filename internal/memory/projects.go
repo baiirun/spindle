@@ -59,7 +59,7 @@ func (p Project) Exists() bool {
 func (p Project) Meta() Meta {
 	m := Meta{Name: p.Name}
 	if p.Name != "" {
-		readJSON(p.metaPath(), &m)
+		_ = readJSON(p.metaPath(), &m)
 	}
 	m.Name = p.Name
 	return m
@@ -159,15 +159,26 @@ func Hint(home, cwd string) (Project, error) {
 		return Project{}, err
 	}
 	best, depth := Project{Home: home}, -1
+	real := resolve(cwd)
 	for _, p := range ps {
 		for _, f := range p.Meta().Folders {
-			if within(cwd, f) && len(f) > depth {
+			if (within(cwd, f) || within(real, resolve(f))) && len(f) > depth {
 				best, depth = p, len(f)
 			}
 		}
 	}
 	best.Cwd = cwd
 	return best, nil
+}
+
+// resolve follows symlinks in path, so a folder linked by one spelling
+// matches a cwd reported by another (macOS's /var is /private/var). A path
+// that can't be resolved is used as is.
+func resolve(path string) string {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		return r
+	}
+	return path
 }
 
 func within(dir, root string) bool {
@@ -290,7 +301,7 @@ func migrateOne(home, dir string) error {
 	var st struct {
 		Cursors map[string]*Cursor `json:"cursors"`
 	}
-	readJSON(filepath.Join(dir, "state.json"), &st)
+	_ = readJSON(filepath.Join(dir, "state.json"), &st)
 	if len(st.Cursors) > 0 {
 		if err := updateCursors(home, func(c map[string]*Cursor) {
 			for path, cur := range st.Cursors {

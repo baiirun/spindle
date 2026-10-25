@@ -40,7 +40,7 @@ func (p Project) Log(e Event) {
 		e.Project = p.Name
 	}
 	if os.MkdirAll(p.Home, 0o755) == nil {
-		appendJSONL(p.eventsPath(), []Event{e})
+		_ = appendJSONL(p.eventsPath(), []Event{e})
 	}
 }
 
