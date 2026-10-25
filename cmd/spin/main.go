@@ -51,6 +51,11 @@ func main() {
 		os.Exit(2)
 	}
 	home, err := memory.Home()
+	if err != nil && os.Args[1] == "hook" {
+		// A hook never fails the session, even with no usable home to log to.
+		fmt.Fprintln(os.Stderr, "spin hook:", err)
+		return
+	}
 	if err == nil {
 		err = run(home, os.Args[1], os.Args[2:])
 	}
