@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -252,6 +254,86 @@ func (c Client) Sources() (string, error) {
 		infos = append(infos, sourceInfo(src, marks))
 	}
 	return FormatSources(source.ConfigPath(c.Home), infos, cfgErr), nil
+}
+
+// AddSource adds a source to sources.json, or points an existing one at
+// another folder. Either way it starts with the sessions that change from now
+// on. With no sources.json yet, the defaults are written out first.
+func (c Client) AddSource(kind, dir string) (string, error) {
+	start := time.Now()
+	msg, err := c.editSources(func(cfg *source.Config) (string, error) {
+		if dir != "" && !strings.HasPrefix(dir, "~") {
+			abs, err := filepath.Abs(dir)
+			if err != nil {
+				return "", err
+			}
+			dir = abs
+		}
+		spec := source.Spec{Kind: kind, Dir: dir, Added: start.UTC()}
+		if _, err := source.New(spec); err != nil {
+			return "", err
+		}
+		for i, s := range cfg.Sources {
+			if s.Kind != kind {
+				continue
+			}
+			if s.Dir == dir {
+				return fmt.Sprintf("%s is already a source.", kind), nil
+			}
+			cfg.Sources[i] = spec
+			return fmt.Sprintf("Pointed %s at %s; it reads sessions that change from now on.", kind, orDefault(dir, "its default folder")), nil
+		}
+		cfg.Sources = append(cfg.Sources, spec)
+		return fmt.Sprintf("Added %s; it reads sessions that change from now on.", kind), nil
+	})
+	c.log(c.Context(), "source_add", nil, "", kind, start, err)
+	return msg, err
+}
+
+// RemoveSource takes a source out of sources.json. Its sessions are no longer
+// swept; what was learned from them stays.
+func (c Client) RemoveSource(kind string) (string, error) {
+	start := time.Now()
+	msg, err := c.editSources(func(cfg *source.Config) (string, error) {
+		for i, s := range cfg.Sources {
+			if s.Kind == kind {
+				cfg.Sources = append(cfg.Sources[:i], cfg.Sources[i+1:]...)
+				return fmt.Sprintf("Removed %s; its sessions are no longer swept, and its memories stay.", kind), nil
+			}
+		}
+		return "", fmt.Errorf("no source %q", kind)
+	})
+	c.log(c.Context(), "source_remove", nil, "", kind, start, err)
+	return msg, err
+}
+
+func (c Client) editSources(f func(*source.Config) (string, error)) (string, error) {
+	unlock, err := lockFile(filepath.Join(c.Home, "sources.lock"), true)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	cfg, err := source.LoadConfig(c.Home)
+	if err != nil {
+		return "", err
+	}
+	cfg.Sources = slices.Clone(cfg.Sources)
+	note, err := f(&cfg)
+	if err != nil {
+		return "", err
+	}
+	if err := source.SaveConfig(c.Home, cfg); err != nil {
+		return "", err
+	}
+	list, err := c.Sources()
+	return note + "\n\n" + list, err
+}
+
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }
 
 func (c Client) log(p Project, op string, files []string, query, note string, start time.Time, err error) {

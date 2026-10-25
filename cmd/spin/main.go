@@ -22,6 +22,7 @@ import (
 	"spindle/internal/mcp"
 	"spindle/internal/memory"
 	"spindle/internal/model"
+	"spindle/internal/source"
 )
 
 const usage = `usage: spin <command> [flags]
@@ -29,7 +30,7 @@ const usage = `usage: spin <command> [flags]
   hook      handle one Claude Code or Codex hook event (JSON on stdin)
   mcp       serve the memory tools over stdio
   status    this folder's project: how many memories, last dream; counts for the rest
-  sources   where sessions come from (Claude Code, Codex) and when each was last swept
+  sources   where sessions come from and when each was last swept (add KIND, rm KIND)
   projects  list every project with its folders and memory count
   project   create or describe a project, link or unlink a folder
   show      print one memory in full
@@ -261,12 +262,37 @@ func runStatus(home string, args []string) error {
 func runSources(home string, args []string) error {
 	fs := flag.NewFlagSet("sources", flag.ExitOnError)
 	dir := projectFlag(fs)
+	from := fs.String("dir", "", "add: the folder the source reads, if not the tool's default")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin sources | spin sources add KIND [--dir DIR] | spin sources rm KIND\nkinds: "+strings.Join(source.Kinds, ", "))
+	}
 	fs.Parse(args)
+	action, kind := "", ""
+	if fs.NArg() > 0 {
+		action = fs.Arg(0)
+		if fs.NArg() < 2 {
+			fs.Usage()
+			os.Exit(2)
+		}
+		kind = fs.Arg(1)
+		fs.Parse(fs.Args()[2:]) // flags after the kind
+	}
 	c, err := client(home, *dir)
 	if err != nil {
 		return err
 	}
-	out, err := c.Sources()
+	var out string
+	switch action {
+	case "":
+		out, err = c.Sources()
+	case "add":
+		out, err = c.AddSource(kind, *from)
+	case "rm", "remove":
+		out, err = c.RemoveSource(kind)
+	default:
+		fs.Usage()
+		os.Exit(2)
+	}
 	if err != nil {
 		return err
 	}

@@ -6,7 +6,8 @@
   the file is missing). Extraction and dreams read sessions through them.
 - Each worker run, and the hourly `spin dream --due`, sweeps the sources for sessions no hook reported once they
   have been quiet for 10 minutes. A new source's first sweep reads no history.
-- New: `spin sources`, `memory_sources`, and `sweep` events in `spin log`.
+- New: `spin sources` (`add KIND [--dir DIR]`, `rm KIND`), `memory_sources`, `memory_source`, and `sweep` events
+  in `spin log`. A source starts from when it was added.
 - No migration: cursors and dream gates keep their format.
 
 ## Projects by meaning (#3)

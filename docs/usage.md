@@ -72,6 +72,8 @@ project, then in global, then in any project that has it.
 |---|---|
 | `spin status` | This folder's project: memory counts by type, linked folders, dream gate; counts for global and the rest; the latest transcript cursors. |
 | `spin sources` | Where sessions come from, the folder each source reads, and its last sweep. |
+| `spin sources add KIND [--dir DIR]` | Add a source, or point one at another folder. It reads the sessions that change from then on. |
+| `spin sources rm KIND` | Stop sweeping a source. What was learned from it stays. |
 | `spin projects` | Every project with its memory count, description and folders. `*` marks this folder's. |
 | `spin project NAME [--description D] [--link DIR] [--unlink DIR]` | Create or describe a project, link or unlink a folder. `--link .` is this repository's root. |
 | `spin index` | What a session here starts with: this project's index, global, a line per other project. |
@@ -96,7 +98,7 @@ Hooks and background work call these; you don't run them yourself:
 | `spin select --session S --id ID --agent A` | The `UserPromptSubmit` hook, to run the recall selector |
 
 The MCP tools match the CLI: `memory_read`, `memory_write`, `memory_delete`, `memory_search`, `memory_index`,
-`memory_status`, `memory_sources`, `memory_projects`, `memory_project`, `memory_dream` (starts a forced dream in the background),
+`memory_status`, `memory_sources`, `memory_source` (add or remove), `memory_projects`, `memory_project`, `memory_dream` (starts a forced dream in the background),
 `memory_log` and `memory_history`.
 
 ## Sources
@@ -112,10 +114,11 @@ Spindle learns from the sessions its sources list. Without a `sources.json` it r
 | `claude-code` | Claude Code transcripts, leaving out `subagents/` folders | `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` if set) |
 | `codex` | Codex rollouts | `~/.codex/sessions` (`$CODEX_HOME/sessions` if set) |
 
-`"dir"` on an entry reads another folder. A source left out isn't swept; `{"sources": []}` turns sweeping off, and
-hooks still queue their own sessions. Hooks report a session within seconds of each turn. The sweep finds the
-sessions no hook reported, once they have been quiet for 10 minutes. A new source's first sweep only marks where
-it starts, so adding one never reads its whole history.
+`spin sources add KIND [--dir DIR]` and `spin sources rm KIND` (or `memory_source`) change the list; editing the
+file by hand works too. The first change writes the defaults out, so removing `codex` leaves `claude-code`. A source
+left out isn't swept, and with none, only hooks queue sessions. Hooks report a session within seconds of each turn. The sweep finds the
+sessions no hook reported, once they have been quiet for 10 minutes. A source starts from when it was added, so
+adding one never reads its whole history.
 
 ## Settings
 

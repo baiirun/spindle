@@ -61,10 +61,21 @@ func Sweep(ctx context.Context, home string, srcs []source.Source, now time.Time
 			marks[kind] = m
 		}
 		m.At = now.UTC()
-		if m.Swept.IsZero() {
+		// A source added (or added again) since its mark starts afresh.
+		var added time.Time
+		if a, ok := src.(interface{ Added() time.Time }); ok {
+			added = a.Added().UTC()
+		}
+		if m.Swept.IsZero() || m.Swept.Before(added) {
 			m.Swept, m.Found, m.Queued, m.Err = until, 0, 0, ""
+			if !added.IsZero() {
+				m.Swept = added // sessions that changed after it was added still count
+			}
 			log.Log(Event{At: now, Kind: "sweep", Name: kind, Note: "first sweep: reading sessions that change from now on"})
 			continue
+		}
+		if !until.After(m.Swept) {
+			continue // added within the last few minutes: nothing has settled since
 		}
 		refs, err := src.List(ctx, m.Swept, until)
 		if err != nil {

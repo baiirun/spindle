@@ -149,6 +149,29 @@ func MemoryTools(c memory.Client, startDream func() error) []Tool {
 			},
 		},
 		{
+			Name: "memory_source",
+			Description: "Add or remove a place memory finds sessions to learn from. A source added starts with the sessions that change from now on. " +
+				"Removing one stops sweeping it and keeps its memories. Only when the user asks.",
+			InputSchema: schema(`{"type":"object","properties":{
+"action":{"type":"string","enum":["add","remove"]},
+"kind":{"type":"string","enum":["claude-code","codex"]},
+"dir":{"type":"string","description":"add: the folder it reads, if not the tool's default"}},
+"required":["action","kind"]}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Action, Kind, Dir string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				switch a.Action {
+				case "add":
+					return c.AddSource(a.Kind, a.Dir)
+				case "remove":
+					return c.RemoveSource(a.Kind)
+				}
+				return "", errors.New(`action must be "add" or "remove"`)
+			},
+		},
+		{
 			Name: "memory_dream",
 			Description: "Start consolidating this folder's project's memory now: merge duplicates, fix what recent sessions contradicted, prune. " +
 				"It runs in the background for a few minutes; check memory_log for the result. Only when the user asks.",

@@ -438,6 +438,7 @@ func TestHookAlwaysExitsZero(t *testing.T) {
 	if log, _ := os.ReadFile(filepath.Join(w.home, "hooks.log")); !strings.Contains(string(log), "hook input") {
 		t.Errorf("bad input not logged:\n%s", log)
 	}
+	w.idle() // the Stop's worker writes to the home until it exits
 }
 
 // Invariant 15: hooks are fast even with a big memory and a hung selector.
@@ -589,5 +590,73 @@ func TestSweepFindsHooklessSession(t *testing.T) {
 	w.spin(w.work, "", "dream", "--due")
 	if n := len(w.calls()); n != 2 {
 		t.Errorf("a read session was extracted again: %v", w.calls())
+	}
+}
+
+// Sources are added and removed from the CLI and MCP alike.
+func TestSourcesAddRemove(t *testing.T) {
+	cli, srv := newWorld(t), newWorld(t)
+	type step struct {
+		cli  []string
+		args map[string]any
+	}
+	steps := []step{
+		{[]string{"sources", "add", "claude-code", "--dir", "WORK/claude"}, map[string]any{"action": "add", "kind": "claude-code", "dir": "WORK/claude"}},
+		{[]string{"sources", "add", "codex", "--dir", "WORK/codex"}, map[string]any{"action": "add", "kind": "codex", "dir": "WORK/codex"}},
+		{[]string{"sources", "rm", "codex"}, map[string]any{"action": "remove", "kind": "codex"}},
+	}
+	var rpc []string
+	rpc = append(rpc, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`)
+	for i, s := range steps {
+		args := map[string]any{}
+		for k, v := range s.args {
+			args[k] = strings.ReplaceAll(fmt.Sprint(v), "WORK", srv.work)
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": "memory_source", "arguments": args}})
+		rpc = append(rpc, string(b))
+	}
+	out := srv.spin(srv.work, strings.Join(rpc, "\n")+"\n", "mcp", "--agent", "claude")
+	results := map[int]string{}
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		var r struct {
+			ID     int
+			Result struct{ Content []struct{ Text string } }
+		}
+		if json.Unmarshal(sc.Bytes(), &r) == nil && len(r.Result.Content) > 0 {
+			results[r.ID] = r.Result.Content[0].Text
+		}
+	}
+	var homes []string
+	for _, w := range []*world{cli, srv} {
+		for _, e := range w.env {
+			if v, ok := strings.CutPrefix(e, "HOME="); ok {
+				homes = append(homes, v)
+			}
+		}
+	}
+	norm := func(s string, w *world, home string) string {
+		return strings.TrimSpace(strings.NewReplacer(w.home, "SPINDLE", w.work, "WORK", home, "HOME").Replace(s))
+	}
+	for i, s := range steps {
+		args := make([]string, len(s.cli))
+		for j, a := range s.cli {
+			args[j] = strings.ReplaceAll(a, "WORK", cli.work)
+		}
+		c := norm(cli.spin(cli.work, "", args...), cli, homes[0])
+		m := norm(results[i+1], srv, homes[1])
+		if c != m {
+			t.Errorf("step %d:\nCLI:\n%s\nMCP:\n%s", i, c, m)
+		}
+	}
+	got := norm(cli.spin(cli.work, "", "sources"), cli, homes[0])
+	if !strings.Contains(got, "claude-code (WORK/claude)") || strings.Contains(got, "codex") {
+		t.Errorf("after the steps:\n%s", got)
+	}
+	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "rm", "codex"); code == 0 || !strings.Contains(errOut, `no source "codex"`) {
+		t.Errorf("removing a missing source: exit %d %s", code, errOut)
+	}
+	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "add", "nope"); code == 0 || !strings.Contains(errOut, "unknown source kind") {
+		t.Errorf("adding an unknown kind: exit %d %s", code, errOut)
 	}
 }

@@ -40,9 +40,13 @@ type Source interface {
 
 // Spec is one entry of sources.json.
 type Spec struct {
-	Kind string `json:"kind"`          // claude-code or codex
-	Dir  string `json:"dir,omitempty"` // where its transcripts live, if not the tool's default
+	Kind  string    `json:"kind"`            // claude-code or codex
+	Dir   string    `json:"dir,omitempty"`   // where its transcripts live, if not the tool's default
+	Added time.Time `json:"added,omitempty"` // when it was added; sweeps start here, not in its history
 }
+
+// Kinds are the kinds New builds.
+var Kinds = []string{ClaudeCode, Codex}
 
 // Config is sources.json.
 type Config struct {
@@ -76,6 +80,25 @@ func LoadConfig(home string) (Config, error) {
 	return c, nil
 }
 
+// SaveConfig writes sources.json.
+func SaveConfig(home string, c Config) error {
+	if c.Sources == nil {
+		c.Sources = []Spec{}
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	tmp := ConfigPath(home) + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, ConfigPath(home))
+}
+
 // New builds the source a spec describes.
 func New(s Spec) (Source, error) {
 	switch s.Kind {
@@ -84,15 +107,15 @@ func New(s Spec) (Source, error) {
 		if dir == "" {
 			dir = claudeDir()
 		}
-		return Files{kind: ClaudeCode, agent: "claude", dir: expand(dir), skipDir: "subagents"}, nil
+		return Files{kind: ClaudeCode, agent: "claude", dir: expand(dir), skipDir: "subagents", added: s.Added}, nil
 	case Codex:
 		dir := s.Dir
 		if dir == "" {
 			dir = codexDir()
 		}
-		return Files{kind: Codex, agent: "codex", dir: expand(dir)}, nil
+		return Files{kind: Codex, agent: "codex", dir: expand(dir), added: s.Added}, nil
 	}
-	return nil, fmt.Errorf("unknown source kind %q", s.Kind)
+	return nil, fmt.Errorf("unknown source kind %q (known: %s)", s.Kind, strings.Join(Kinds, ", "))
 }
 
 // Load builds every configured source. A spec that can't be built is
@@ -128,13 +151,18 @@ func Read(ctx context.Context, loc string) (transcript.Session, error) {
 type Files struct {
 	kind, agent string
 	dir         string
-	skipDir     string // folders of this name hold subagents' transcripts
+	skipDir     string    // folders of this name hold subagents' transcripts
+	added       time.Time // when the source was added, if known
 }
 
 func (f Files) Kind() string { return f.kind }
 
 // Dir is the folder the source reads.
 func (f Files) Dir() string { return f.dir }
+
+// Added is when the source was added to sources.json; zero if it came from
+// the defaults.
+func (f Files) Added() time.Time { return f.added }
 
 func (f Files) List(ctx context.Context, since, until time.Time) ([]Ref, error) {
 	var out []Ref

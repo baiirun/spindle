@@ -67,8 +67,8 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
 ### Sessions
 
 26. **Spindle learns from the sessions its sources list.** A source lists its sessions that changed and reads one
-    session's messages. Extraction and dreams read sessions only through sources, and `sources.json` says which
-    sources there are.
+    session's messages. Extraction and dreams read sessions only through sources. `sources.json` says which sources
+    there are, and the CLI and MCP add and remove them.
 27. **A cursor is a position in a session, so no message is read twice.** A new source starts from the time it
     was added, not from its history.
 

@@ -85,3 +85,51 @@ func TestSweepKeepsAFailedSourcesMark(t *testing.T) {
 		t.Errorf("mark %+v", m)
 	}
 }
+
+// A source added again starts from when it was added, not from its old mark.
+func TestSweepReAddedSourceStartsAfresh(t *testing.T) {
+	p := project(t)
+	dir := t.TempDir()
+	now := t0.Add(24 * time.Hour)
+	writeJSON(marksPath(p.Home), map[string]*Mark{source.Codex: {Swept: now.Add(-48 * time.Hour)}})
+	old := filepath.Join(dir, "while-removed.jsonl")
+	claudeTranscript(t, old, p.Cwd, t0, "A session from while the source was removed.", "ok")
+	os.Chtimes(old, now.Add(-time.Hour), now.Add(-time.Hour))
+	src, _ := source.New(source.Spec{Kind: source.Codex, Dir: dir, Added: now.Add(-30 * time.Minute)})
+	if err := Sweep(context.Background(), p.Home, []source.Source{src}, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(pending(p.Home)) != 0 {
+		t.Fatal("a re-added source read sessions from before it was added")
+	}
+	if m, _ := Marks(p.Home); !m[source.Codex].Swept.Equal(now.Add(-30 * time.Minute)) {
+		t.Errorf("mark %+v", m[source.Codex])
+	}
+}
+
+// A source added a moment ago waits for sessions to settle, without
+// restarting itself on each sweep.
+func TestSweepJustAddedSource(t *testing.T) {
+	p := project(t)
+	now := t0.Add(24 * time.Hour)
+	added := now.Add(-time.Minute)
+	src, _ := source.New(source.Spec{Kind: source.Codex, Dir: t.TempDir(), Added: added})
+	for i := 0; i < 2; i++ {
+		if err := Sweep(context.Background(), p.Home, []source.Source{src}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m, _ := Marks(p.Home); !m[source.Codex].Swept.Equal(added) {
+		t.Errorf("mark %+v", m[source.Codex])
+	}
+	evs, _ := p.Events()
+	n := 0
+	for _, e := range evs {
+		if e.Kind == "sweep" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d sweep events, want one first-sweep note", n)
+	}
+}
