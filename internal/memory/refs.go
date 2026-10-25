@@ -194,7 +194,7 @@ func (p Project) ApplyAll(ops []Op, by, session string, now time.Time) (Result, 
 				}
 			}
 			if desc != "" {
-				s.UpdateMeta(func(m *Meta) { m.Description = desc })
+				_ = s.UpdateMeta(func(m *Meta) { m.Description = desc })
 			}
 		}
 	}

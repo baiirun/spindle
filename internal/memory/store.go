@@ -503,7 +503,7 @@ func lockFile(path string, wait bool) (func(), error) {
 		}
 		return nil, err
 	}
-	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }

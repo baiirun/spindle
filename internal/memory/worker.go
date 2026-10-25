@@ -34,7 +34,7 @@ func Enqueue(home string, j Job) error {
 		j.At = time.Now().UTC()
 	}
 	var r [4]byte
-	rand.Read(r[:])
+	_, _ = rand.Read(r[:])
 	return writeJSON(filepath.Join(queueDir(home), fmt.Sprintf("%d-%s.json", j.At.UnixNano(), hex.EncodeToString(r[:]))), j)
 }
 

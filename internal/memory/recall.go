@@ -129,7 +129,7 @@ func RunSelect(ctx context.Context, home, session, id string, m model.Model, loc
 	p := Project{Home: home}
 	var sel *Selection
 	var surfaced []string
-	p.withRecall(session, func(st *RecallState) error {
+	err := p.withRecall(session, func(st *RecallState) error {
 		if st.Pending != nil && st.Pending.ID == id {
 			c := *st.Pending
 			sel = &c
@@ -139,6 +139,9 @@ func RunSelect(ctx context.Context, home, session, id string, m model.Model, loc
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
 	if sel == nil {
 		return nil // superseded by a newer message
 	}

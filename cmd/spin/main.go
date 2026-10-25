@@ -405,7 +405,7 @@ func runDream(home string, args []string) error {
 	due := fs.Bool("due", false, "dream every project whose gate is open (what the schedule runs)")
 	fs.String("agent", "", "ignored: dreams use Codex, then Claude if Codex fails (SPINDLE_BACKEND pins one)")
 	fs.Parse(args)
-	os.Setenv(memory.InnerEnv, "1")
+	_ = os.Setenv(memory.InnerEnv, "1")
 	m := model.For("", model.Dream)
 	if *due {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -449,7 +449,7 @@ func runExtract(home string, args []string) error {
 		return err
 	}
 	c := memory.NewClient(home, cwd, *dir, "cli")
-	os.Setenv(memory.InnerEnv, "1")
+	_ = os.Setenv(memory.InnerEnv, "1")
 	res, err := c.Extract(context.Background(), path, model.For(agent, model.Extract))
 	if err != nil {
 		return err
@@ -466,7 +466,7 @@ func runWorker(home string, args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
 	noDream := fs.Bool("no-dream", false, "skip the dream gate check")
 	fs.Parse(args)
-	os.Setenv(memory.InnerEnv, "1")
+	_ = os.Setenv(memory.InnerEnv, "1")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoDream: *noDream})
@@ -481,7 +481,7 @@ func runSelect(home string, args []string) error {
 	if *id == "" {
 		return fmt.Errorf("--id is required")
 	}
-	os.Setenv(memory.InnerEnv, "1")
+	_ = os.Setenv(memory.InnerEnv, "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	return memory.RunSelect(ctx, home, *session, *id, model.For(*agent, model.Select), false)

@@ -57,14 +57,14 @@ func (s Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 		var req request
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-			enc.Encode(response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &Error{-32700, "parse error"}})
+			_ = enc.Encode(response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &Error{-32700, "parse error"}})
 			continue
 		}
 		if len(req.ID) == 0 {
 			continue // a notification
 		}
 		result, err := s.handle(ctx, req)
-		enc.Encode(response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: err})
+		_ = enc.Encode(response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: err})
 	}
 	return sc.Err()
 }
@@ -75,7 +75,7 @@ func (s Server) handle(ctx context.Context, req request) (any, *Error) {
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
-		json.Unmarshal(req.Params, &p)
+		_ = json.Unmarshal(req.Params, &p) // missing or bad params get the default version
 		v := versions[0]
 		for _, x := range versions {
 			if x == p.ProtocolVersion {

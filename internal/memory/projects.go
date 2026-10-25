@@ -59,7 +59,7 @@ func (p Project) Exists() bool {
 func (p Project) Meta() Meta {
 	m := Meta{Name: p.Name}
 	if p.Name != "" {
-		readJSON(p.metaPath(), &m)
+		_ = readJSON(p.metaPath(), &m)
 	}
 	m.Name = p.Name
 	return m
@@ -290,7 +290,7 @@ func migrateOne(home, dir string) error {
 	var st struct {
 		Cursors map[string]*Cursor `json:"cursors"`
 	}
-	readJSON(filepath.Join(dir, "state.json"), &st)
+	_ = readJSON(filepath.Join(dir, "state.json"), &st)
 	if len(st.Cursors) > 0 {
 		if err := updateCursors(home, func(c map[string]*Cursor) {
 			for path, cur := range st.Cursors {
