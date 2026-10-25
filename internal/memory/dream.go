@@ -112,12 +112,23 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 		return res, err
 	}
 	defer unlock()
-	for i := range out.Ops {
-		_, out.Ops[i].Name = splitRef(out.Ops[i].Name) // the dream sees one store; names are bare
+	// The dream sees one store, so its names are bare. A name prefixed with
+	// another store points outside what it saw; skip it rather than strip it.
+	var ops []Op
+	skipped := 0
+	for _, o := range out.Ops {
+		store, name := splitRef(o.Name)
+		if store != "" && store != p.Name {
+			skipped++
+			continue
+		}
+		o.Name = name
+		ops = append(ops, o)
 	}
-	if res.Result, err = p.Apply(out.Ops, "dream", "", now); err != nil {
+	if res.Result, err = p.Apply(ops, "dream", "", now); err != nil {
 		return res, err
 	}
+	res.Skipped += skipped
 	res.Summary = out.Summary
 	if state, err = p.LoadState(); err != nil {
 		return res, err
