@@ -52,7 +52,7 @@ func TestTools(t *testing.T) {
 		}
 		return got[id].Result.Content[0].Text
 	}
-	if len(got) != 10 || got[1].Result.ProtocolVersion != "2025-03-26" || len(got[2].Result.Tools) != 5 {
+	if len(got) != 10 || got[1].Result.ProtocolVersion != "2025-03-26" || len(got[2].Result.Tools) != 6 {
 		t.Fatalf("responses:\n%s", out.String())
 	}
 	if text(3) != "Saved no-mocks.md." || !strings.Contains(text(4), "no-mocks.md") || !strings.Contains(text(5), "**Why:** mocks") || !strings.Contains(text(6), "[no-mocks](no-mocks.md)") {

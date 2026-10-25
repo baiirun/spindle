@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,7 +27,12 @@ const usage = `usage: spin <command> [flags]
 
   hook      handle one Claude Code or Codex hook event (JSON on stdin)
   mcp       serve the project's memory tools over stdio
-  status    show a project's memory
+  status    how many memories, last dream, how far each session was read
+  show      print one memory in full
+  search    find memories by words in their name, description or body
+  write     create or replace a memory (body on stdin)
+  rm        delete a memory
+  index     print MEMORY.md
   log       show the project's memory activity: recalls, saves, tool calls (-f to follow)
   install   print the hook and MCP config for claude or codex
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
@@ -58,6 +64,16 @@ func run(home, cmd string, args []string) error {
 		return runMCP(home, args)
 	case "status":
 		return runStatus(home, args)
+	case "show":
+		return runShow(home, args)
+	case "search":
+		return runSearch(home, args)
+	case "write":
+		return runWrite(home, args)
+	case "rm":
+		return runRm(home, args)
+	case "index":
+		return runIndex(home, args)
 	case "log":
 		return runLog(home, args)
 	case "install":
@@ -139,36 +155,132 @@ func runMCP(home string, args []string) error {
 	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent)}.Serve(ctx, os.Stdin, os.Stdout)
 }
 
+// client resolves the project from --project or the working directory.
+func client(home, dir string) (memory.Client, error) {
+	p, err := memory.Resolve(home, dir)
+	return p.Client("cli"), err
+}
+
 func runStatus(home string, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	dir := projectFlag(fs)
 	fs.Parse(args)
-	p, err := memory.Resolve(home, *dir)
+	c, err := client(home, *dir)
 	if err != nil {
 		return err
 	}
-	mems, err := p.Load()
+	s, err := c.Status()
 	if err != nil {
 		return err
 	}
-	st, err := p.LoadState()
+	fmt.Print(memory.FormatStatus(s))
+	return nil
+}
+
+func runShow(home string, args []string) error {
+	fs := flag.NewFlagSet("show", flag.ExitOnError)
+	dir := projectFlag(fs)
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin show [--project DIR] NAME") }
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	c, err := client(home, *dir)
 	if err != nil {
 		return err
 	}
-	counts := map[string]int{}
-	for _, m := range mems {
-		counts[m.Type]++
+	m, err := c.Read(fs.Arg(0))
+	if err != nil {
+		return err
 	}
-	fmt.Printf("project  %s\nmemory   %s\n", p.Root, p.MemDir())
-	fmt.Printf("files    %d (user %d, directive %d, project %d, reference %d)\n", len(mems), counts["user"], counts["directive"], counts["project"], counts["reference"])
-	last := "never"
-	if !st.LastDream.IsZero() {
-		last = st.LastDream.Local().Format("2006-01-02 15:04")
+	fmt.Print(memory.FormatMemory(m))
+	return nil
+}
+
+func runSearch(home string, args []string) error {
+	fs := flag.NewFlagSet("search", flag.ExitOnError)
+	dir := projectFlag(fs)
+	n := fs.Int("n", 10, "at most this many results")
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin search [--project DIR] [-n N] WORDS...") }
+	fs.Parse(args)
+	if fs.NArg() == 0 {
+		fs.Usage()
+		os.Exit(2)
 	}
-	fmt.Printf("dream    last %s; %d of %d sessions since, due after %s\n", last, len(st.Sessions), memory.DreamSessions, memory.DreamEvery)
-	for path, c := range st.Cursors {
-		fmt.Printf("cursor   %s line %d, %s (%s)\n", c.Agent, c.Line, c.At.Local().Format("2006-01-02 15:04"), path)
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
 	}
+	hits, total, err := c.Search(strings.Join(fs.Args(), " "), *n)
+	if err != nil {
+		return err
+	}
+	fmt.Print(memory.FormatSearch(hits, total))
+	return nil
+}
+
+func runWrite(home string, args []string) error {
+	fs := flag.NewFlagSet("write", flag.ExitOnError)
+	dir := projectFlag(fs)
+	typ := fs.String("type", "", "user, directive, project or reference (default: keep the existing type)")
+	desc := fs.String("description", "", "one line, used to decide relevance (default: keep the existing one)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin write [--project DIR] [--type T] [--description D] NAME < body.md\n\nThe body is read from stdin and replaces the whole memory.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
+	}
+	msg, err := c.Write(memory.Op{Name: fs.Arg(0), Type: *typ, Description: *desc, Body: string(body)})
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
+}
+
+func runRm(home string, args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ExitOnError)
+	dir := projectFlag(fs)
+	reason := fs.String("reason", "", "why, for the change log")
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin rm [--project DIR] [--reason WHY] NAME") }
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
+	}
+	msg, err := c.Delete(fs.Arg(0), *reason)
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
+}
+
+func runIndex(home string, args []string) error {
+	fs := flag.NewFlagSet("index", flag.ExitOnError)
+	dir := projectFlag(fs)
+	fs.Parse(args)
+	c, err := client(home, *dir)
+	if err != nil {
+		return err
+	}
+	fmt.Print(c.Index())
 	return nil
 }
 
@@ -298,7 +410,7 @@ func runLog(home string, args []string) error {
 	follow := fs.Bool("f", false, "keep printing new events")
 	n := fs.Int("n", 50, "show the last n events (0: all)")
 	session := fs.String("session", "", "only this session (a prefix is enough)")
-	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, mcp, extract, dream")
+	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, call, extract, dream")
 	asJSON := fs.Bool("json", false, "print raw JSON lines")
 	fs.Parse(args)
 	p, err := memory.Resolve(home, *dir)
