@@ -141,7 +141,10 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 	if res.Skip == "" {
 		start := time.Now()
 		ev := Event{Kind: "extract", Agent: s.Agent, Session: s.ID, Note: fmt.Sprintf("%d new messages", len(fresh))}
-		ops, err := extractOps(ctx, p, m, fresh)
+		ops, cut, err := extractOps(ctx, p, m, fresh)
+		if cut > 0 {
+			ev.Note += fmt.Sprintf("; earliest %d characters cut to fit the %d-character window", cut, extractWindow)
+		}
 		if err == nil {
 			res.Result, err = p.ApplyAll(ops, "extract", s.ID, now)
 		}
@@ -179,15 +182,18 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 	})
 }
 
-// extractOps asks for the files to read, then for the writes.
-func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcript.Message) ([]Op, error) {
+// extractOps asks for the files to read, then for the writes. It also
+// returns how many characters of the oldest messages were cut to fit the window.
+func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcript.Message) ([]Op, int, error) {
 	mems, err := p.LoadAll()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	msgs := transcript.Render(fresh, messageChars)
+	cut := 0
 	if len(msgs) > extractWindow {
-		msgs = "…(earlier messages cut)\n\n" + msgs[len(msgs)-extractWindow:]
+		cut = len(msgs) - extractWindow
+		msgs = "…(earlier messages cut)\n\n" + msgs[cut:]
 	}
 	list := fileList(mems, 0)
 	var step1 struct {
@@ -197,10 +203,10 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 	session := p.sessionText()
 	prompt := fmt.Sprintf("%s## Existing memory files\n\n%s\n## New messages (~%d)\n\n%s", session, orNone(list), len(fresh), msgs)
 	if err := completeJSON(ctx, m, extractReadSystem, prompt, extractReadSchema, &step1); err != nil {
-		return nil, fmt.Errorf("extract step 1: %w", err)
+		return nil, cut, fmt.Errorf("extract step 1: %w", err)
 	}
 	if step1.NothingToSave {
-		return nil, nil
+		return nil, cut, nil
 	}
 	var files strings.Builder
 	for i, name := range step1.Read {
@@ -216,9 +222,9 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 	}
 	prompt = fmt.Sprintf("%s## Files you read\n\n%s\n## All memory files\n\n%s\n## New messages (~%d)\n\n%s", session, orNone(files.String()), orNone(list), len(fresh), msgs)
 	if err := completeJSON(ctx, m, extractWriteSystem, prompt, opsSchema, &step2); err != nil {
-		return nil, fmt.Errorf("extract step 2: %w", err)
+		return nil, cut, fmt.Errorf("extract step 2: %w", err)
 	}
-	return step2.Ops, nil
+	return step2.Ops, cut, nil
 }
 
 // sessionText tells a side pass which project the session is in and which
