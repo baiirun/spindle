@@ -18,7 +18,7 @@ func MemoryTools(p memory.Project, agent string, startDream func() error) []Tool
 	return []Tool{
 		{
 			Name:        "memory_read",
-			Description: "Read one memory file in full, by name (as listed in the memory index).",
+			Description: "Read one memory file in full, by name as listed in the memory index (global ones as global/<name>).",
 			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct{ Name string }
@@ -39,6 +39,7 @@ func MemoryTools(p memory.Project, agent string, startDream func() error) []Tool
 			InputSchema: schema(`{"type":"object","properties":{
 "name":{"type":"string","description":"short kebab-case slug"},
 "type":{"type":"string","enum":["user","directive","project","reference"]},
+"scope":{"type":"string","enum":["project","global"],"description":"global loads in every project: who the user is, rules they want everywhere. Default: global for user, else project"},
 "description":{"type":"string"},
 "body":{"type":"string","description":"for directive and project: the rule or fact, then **Why:** and **How to apply:** lines"}},
 "required":["name","type","description","body"]}`),

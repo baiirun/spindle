@@ -264,7 +264,8 @@ type Op struct {
 	Type        string `json:"type"`
 	Description string `json:"description"`
 	Body        string `json:"body"`
-	Reason      string `json:"reason"` // for delete
+	Reason      string `json:"reason"`          // for delete
+	Scope       string `json:"scope,omitempty"` // project | global | "" (see scopeFor)
 }
 
 // Change is one audit-log line.

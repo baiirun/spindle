@@ -18,6 +18,16 @@ It follows Claude Code's auto memory, with one change of name.
 - **Changes overwrite in place**, and wrong memories are deleted. Every write and delete also goes to
   `changes.jsonl` with the old text, for audit only. Nothing reads that log back into context.
 
+## Scopes
+
+Memory has two scopes. A project's memories load only in that project. Global memories, in
+`~/.spindle/global/memory/`, load in every project: who the user is, and rules they want everywhere ("never add
+Claude attribution"). Everywhere a memory is named (the index, recall, tools, CLI), a global one is
+`global/<name>`. A write with no scope goes where that name already exists, else to global for type `user` and to
+the project for the rest. Session start shows both indexes, recall picks from both, and extraction can write to
+either. Dreaming covers the project's memories only. Claude Code's auto memory has no cross-project scope; its
+private and team scopes are both per project.
+
 ## When things run
 
 | When | Hook | What happens |

@@ -22,6 +22,11 @@ If the user asks you to remember something, save it right away as the type that 
 - reference: where information lives in external systems (a tracker, a dashboard, a channel, a doc) and what it is for.
 For directive and project memories, lead with the rule or fact, then a **Why:** line (the reason, often an incident or a constraint) and a **How to apply:** line (when it kicks in).
 
+## Scope
+- project (default): loads only in this project.
+- global: loads in every project. Use it for who the user is and for rules they want everywhere ("never", "always", "in all my repos"). Global memories are named global/<name>.
+A write with no scope goes to global for type user, else to this project; writing an existing name updates it where it is.
+
 ## What not to save
 Code patterns, architecture, file paths or project structure (read the project instead); git history or who changed what; fix recipes; anything already in CLAUDE.md or AGENTS.md; in-progress work, temporary state or current conversation context. This holds even when asked: if asked to save an activity summary, save what was surprising or non-obvious about it.
 
@@ -57,6 +62,8 @@ const typesGuide = `Memory types:
 - project: ongoing work, goals, initiatives, decisions, bugs or incidents that are not derivable from the code or git history: who is doing what, why, by when. Always convert relative dates to absolute dates. Body: the fact or decision, then **Why:** and **How to apply:** lines.
 - reference: pointers to where information lives in external systems and what each is for.
 
+Scope: "global" for who the user is and for rules they want in every project ("never", "always", "in all my repos"); "project" for everything about this project. Global memories are listed as global/<name>.md; to update one, write its name with scope "global". Leave scope "" to let a user memory go global and anything else stay in the project.
+
 What NOT to save: code patterns, conventions, architecture, file paths or project structure; git history or who changed what; debugging solutions or fix recipes; anything already in CLAUDE.md or AGENTS.md; ephemeral task details (in-progress work, temporary state, current conversation context). These exclusions apply even when the user explicitly asks to save; then save what was surprising or non-obvious.
 
 Memory file rules: one subject per memory, organized by topic, not chronologically. name: short kebab-case slug, also the file name. description: one line, specific enough to decide relevance from the index alone. Link related memories in the body with [[name]]. Update an existing memory (write with its exact name and the full new body) rather than creating a duplicate. Update or delete memories that turn out to be wrong or outdated.`
@@ -81,11 +88,11 @@ const extractReadSchema = `{"type":"object","properties":{"nothing_to_save":{"ty
 const extractWriteSystem = extractSystem + `
 
 Step 2 of 2. You are given the files you asked to read, the list of all memory files, and the new messages. Return the operations to apply, as JSON:
-- write: create or replace a memory. name, type, description and the full body (a write replaces the whole file).
+- write: create or replace a memory. name, type, description, scope and the full body (a write replaces the whole file).
 - delete: remove a memory that is wrong, contradicted or no longer useful. name and reason.
 Fill unused fields with "". Return an empty list if nothing is worth saving after all.`
 
-const opsSchema = `{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["write","delete"]},"name":{"type":"string"},"type":{"type":"string","enum":["user","directive","project","reference",""]},"description":{"type":"string"},"body":{"type":"string"},"reason":{"type":"string"}},"required":["op","name","type","description","body","reason"],"additionalProperties":false}}},"required":["ops"],"additionalProperties":false}`
+const opsSchema = `{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["write","delete"]},"name":{"type":"string"},"type":{"type":"string","enum":["user","directive","project","reference",""]},"scope":{"type":"string","enum":["project","global",""]},"description":{"type":"string"},"body":{"type":"string"},"reason":{"type":"string"}},"required":["op","name","type","scope","description","body","reason"],"additionalProperties":false}}},"required":["ops"],"additionalProperties":false}`
 
 // dreamSystem is Claude Code's auto_dream prompt for a model call without
 // tools: the memory files, the instruction files and the user's recent

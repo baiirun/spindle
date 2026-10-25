@@ -8,11 +8,7 @@ const StartBudget = 9_500
 // compaction: the memory instructions and the index, the counterpart of
 // Claude Code loading its memory section and MEMORY.md.
 func (p Project) StartContext() string {
-	index := p.ReadIndex()
-	if index == "" {
-		index = "(empty: nothing saved for this project yet)\n"
-	}
-	text := Instructions + "\n\n" + index
+	text := Instructions + "\n\n" + p.indexText()
 	if len(text) > StartBudget {
 		text = clipRunes(text, StartBudget-80) + "\n(index cut here; memory_search finds the rest)\n"
 	}

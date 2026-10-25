@@ -230,6 +230,7 @@ func runWrite(home string, args []string) error {
 	dir := projectFlag(fs)
 	typ := fs.String("type", "", "user, directive, project or reference (default: keep the existing type)")
 	desc := fs.String("description", "", "one line, used to decide relevance (default: keep the existing one)")
+	global := fs.Bool("global", false, "save to the global store, loaded in every project (or name it global/NAME)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: spin write [--project DIR] [--type T] [--description D] NAME < body.md\n\nThe body is read from stdin and replaces the whole memory.")
 		fs.PrintDefaults()
@@ -247,7 +248,11 @@ func runWrite(home string, args []string) error {
 	if err != nil {
 		return err
 	}
-	msg, err := c.Write(memory.Op{Name: fs.Arg(0), Type: *typ, Description: *desc, Body: string(body)})
+	o := memory.Op{Name: fs.Arg(0), Type: *typ, Description: *desc, Body: string(body)}
+	if *global {
+		o.Scope = "global"
+	}
+	msg, err := c.Write(o)
 	if err != nil {
 		return err
 	}

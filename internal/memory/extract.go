@@ -95,7 +95,7 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 		res.Skip = "no new messages"
 	case userChars < minUserChars:
 		res.Skip = "too little user text"
-	case p.agentWroteSince(fresh[0].Time):
+	case p.wroteSince("agent", fresh[0].Time):
 		res.Skip = "agent wrote memory"
 	}
 	if res.Skip == "" {
@@ -105,7 +105,7 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 		if err == nil {
 			var unlock func()
 			if unlock, err = p.Lock(); err == nil {
-				res.Result, err = p.Apply(ops, "extract", s.ID, now)
+				res.Result, err = p.ApplyAll(ops, "extract", s.ID, now)
 				unlock()
 			}
 		}
@@ -143,7 +143,7 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 
 // extractOps asks for the files to read, then for the writes.
 func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcript.Message) ([]Op, error) {
-	mems, err := p.Load()
+	mems, err := p.LoadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 		if i >= readFilesLimit {
 			break
 		}
-		if mem, ok := p.Get(name); ok {
+		if mem, ok := p.GetRef(name); ok {
 			fmt.Fprintf(&files, "<file name=%q>\n%s</file>\n\n", mem.File(), mem.Render())
 		}
 	}
@@ -180,22 +180,6 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 		return nil, fmt.Errorf("extract step 2: %w", err)
 	}
 	return step2.Ops, nil
-}
-
-// agentWroteSince reports whether the main agent wrote memory after t, in
-// which case the extraction pass would only second-guess it.
-func (p Project) agentWroteSince(t time.Time) bool {
-	changes, _ := p.Changes()
-	for i := len(changes) - 1; i >= 0; i-- {
-		c := changes[i]
-		if c.At.Before(t) {
-			break
-		}
-		if c.By == "agent" {
-			return true
-		}
-	}
-	return false
 }
 
 // fileList is the "[type] file (mtime): description" list Claude Code shows

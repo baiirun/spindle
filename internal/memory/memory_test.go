@@ -372,7 +372,7 @@ func TestWorker(t *testing.T) {
 
 func TestStartContext(t *testing.T) {
 	p := project(t)
-	if s := p.StartContext(); !strings.Contains(s, "directive:") || !strings.Contains(s, "(empty") {
+	if s := p.StartContext(); !strings.Contains(s, "directive:") || !strings.Contains(s, "No memories yet") {
 		t.Fatalf("empty start context:\n%s", s)
 	}
 	write(t, p, Op{Op: "write", Name: "role", Type: "user", Description: "Backend dev", Body: "Go."})

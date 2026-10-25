@@ -90,7 +90,7 @@ func (p Project) StartRecall(session, agent, prompt string, now time.Time) (stri
 		skipped("one-word prompt")
 		return "", nil
 	}
-	mems, err := p.Load()
+	mems, err := p.LoadAll()
 	if err != nil || len(mems) == 0 {
 		if err == nil {
 			skipped("no memories yet")
@@ -135,7 +135,7 @@ func (p Project) RunSelect(ctx context.Context, session, id string, m model.Mode
 	if sel == nil {
 		return nil // superseded by a newer message
 	}
-	mems, err := p.Load()
+	mems, err := p.LoadAll()
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func modelSelect(ctx context.Context, m model.Model, mems []Memory, prompt strin
 	}
 	var files []string
 	for _, f := range out.Selected {
-		f = NameOf(f) + ".md"
+		f = normRef(f)
 		if known[f] && !contains(files, f) && len(files) < SelectMax {
 			files = append(files, f)
 		}
@@ -306,7 +306,7 @@ func (p Project) attach(session, id string) (string, bool, error) {
 			if st.Surfaced[f] {
 				continue
 			}
-			m, ok := p.Get(f)
+			m, ok := p.GetRef(f)
 			if !ok {
 				continue
 			}
@@ -339,7 +339,9 @@ func recalled(m Memory, now time.Time) string {
 	if days := int(now.Sub(m.Modified).Hours() / 24); days >= 1 {
 		fmt.Fprintf(&b, "This memory is %d days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.\n\n", days)
 	}
-	body := m.Render()
+	bare := m
+	bare.Name = strings.TrimPrefix(m.Name, GlobalPrefix)
+	body := bare.Render()
 	if len(body) > FileBytes {
 		body = clipRunes(body, FileBytes) + "\n(cut; memory_read for the rest)"
 	}
@@ -377,6 +379,15 @@ func (p Project) ResetRecall(session string) error {
 		*st = RecallState{Surfaced: map[string]bool{}}
 		return nil
 	})
+}
+
+// normRef normalizes a selector's file name, keeping a global/ prefix.
+func normRef(f string) string {
+	f = strings.TrimSpace(f)
+	if strings.HasPrefix(f, GlobalPrefix) {
+		return GlobalPrefix + NameOf(strings.TrimPrefix(f, GlobalPrefix)) + ".md"
+	}
+	return NameOf(f) + ".md"
 }
 
 func contains(xs []string, x string) bool {

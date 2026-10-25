@@ -26,12 +26,12 @@ func (p Project) Client(caller string) Client { return Client{p, caller} }
 // Read returns one memory in full.
 func (c Client) Read(name string) (Memory, error) {
 	start := time.Now()
-	m, ok := c.Get(name)
+	m, ok := c.GetRef(name)
 	var err error
 	if !ok {
-		err = fmt.Errorf("no memory %q", NameOf(name))
+		err = fmt.Errorf("no memory %q", m.Name)
 	}
-	c.log("read", []string{NameOf(name) + ".md"}, "", "", start, err)
+	c.log("read", []string{m.Name + ".md"}, "", "", start, err)
 	return m, err
 }
 
@@ -58,11 +58,12 @@ func (c Client) apply(o Op) (string, error) {
 		if c.Caller == "cli" {
 			by = "cli"
 		}
-		res, err := c.Apply([]Op{o}, by, "", time.Now())
+		res, err := c.ApplyAll([]Op{o}, by, "", time.Now())
 		if err != nil {
 			return "", err
 		}
-		name := NameOf(o.Name)
+		s, bare := c.scopeFor(o)
+		name := RefOf(s, NameOf(bare.Name))
 		switch {
 		case res.Written > 0:
 			return "Saved " + name + ".md.", nil
@@ -75,14 +76,15 @@ func (c Client) apply(o Op) (string, error) {
 		}
 		return "Unchanged.", nil
 	}()
-	c.log(o.Op, []string{NameOf(o.Name) + ".md"}, "", oneLine(o.Reason), start, err)
+	s, bare := c.scopeFor(o)
+	c.log(o.Op, []string{RefOf(s, NameOf(bare.Name)) + ".md"}, "", oneLine(o.Reason), start, err)
 	return msg, err
 }
 
 // Search ranks memories by the query's words; total is how many memories exist.
 func (c Client) Search(query string, limit int) (hits []Memory, total int, err error) {
 	start := time.Now()
-	mems, err := c.Load()
+	mems, err := c.LoadAll()
 	if err == nil {
 		hits, total = Search(mems, query, limit), len(mems)
 	}
@@ -93,14 +95,21 @@ func (c Client) Search(query string, limit int) (hits []Memory, total int, err e
 // Index is MEMORY.md as it is now, or a line saying there is nothing yet.
 func (c Client) Index() string {
 	c.log("index", nil, "", "", time.Now(), nil)
-	s := c.ReadIndex()
-	if strings.TrimSpace(s) == "" {
-		return fmt.Sprintf("No memories yet for %s.\n", c.Root)
+	return c.indexText()
+}
+
+// indexText is the project's index, then the global one.
+func (p Project) indexText() string {
+	var b strings.Builder
+	if s := strings.TrimSpace(p.ReadIndex()); s != "" {
+		b.WriteString(s + "\n")
+	} else {
+		fmt.Fprintf(&b, "No memories yet for %s.\n", p.Root)
 	}
-	if !strings.HasSuffix(s, "\n") {
-		s += "\n"
+	if g := strings.TrimSpace(p.GlobalIndex()); g != "" {
+		b.WriteString("\n# Global memory (every project)\n\n" + g + "\n")
 	}
-	return s
+	return b.String()
 }
 
 // Status summarizes the project's memory and bookkeeping.
@@ -108,6 +117,7 @@ type Status struct {
 	Root, MemDir string
 	Total        int
 	Types        map[string]int
+	Global       int // memories in the global store
 	LastDream    time.Time
 	SinceDream   int // sessions since the last dream
 	Cursors      map[string]*Cursor
@@ -127,6 +137,9 @@ func (c Client) Status() (Status, error) {
 		s.Types[m.Type]++
 	}
 	s.Total, s.LastDream, s.SinceDream, s.Cursors = len(mems), st.LastDream, len(st.Sessions), st.Cursors
+	if glob, err := c.Global().Load(); err == nil && !c.IsGlobal() {
+		s.Global = len(glob)
+	}
 	return s, nil
 }
 
@@ -137,7 +150,9 @@ func (c Client) log(op string, files []string, query, note string, start time.Ti
 // The text both interfaces show.
 
 func FormatMemory(m Memory) string {
-	return fmt.Sprintf("Memory: %s (modified %s):\n\n%s", m.File(), m.Modified.UTC().Format("2006-01-02"), m.Render())
+	bare := m
+	bare.Name = strings.TrimPrefix(m.Name, GlobalPrefix)
+	return fmt.Sprintf("Memory: %s (modified %s):\n\n%s", m.File(), m.Modified.UTC().Format("2006-01-02"), bare.Render())
 }
 
 func FormatSearch(hits []Memory, total int) string {
@@ -153,6 +168,7 @@ func FormatStatus(s Status) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "project  %s\nmemory   %s\n", s.Root, s.MemDir)
 	fmt.Fprintf(&b, "files    %d (user %d, directive %d, project %d, reference %d)\n", s.Total, s.Types["user"], s.Types["directive"], s.Types["project"], s.Types["reference"])
+	fmt.Fprintf(&b, "global   %d, shared by every project\n", s.Global)
 	last := "never"
 	if !s.LastDream.IsZero() {
 		last = s.LastDream.Local().Format("2006-01-02 15:04")
@@ -220,16 +236,16 @@ func (f LogFilter) Match(e Event) bool {
 // History returns one memory's changes, newest first. Old versions are for
 // people auditing memory; they are never put into context on their own.
 func (c Client) History(name string) ([]Change, error) {
-	name = NameOf(name)
+	store, name := c.ref(name)
 	start := time.Now()
-	all, err := c.Changes()
+	all, err := store.Changes()
 	var out []Change
 	for i := len(all) - 1; i >= 0; i-- {
 		if all[i].Name == name {
 			out = append(out, all[i])
 		}
 	}
-	c.log("history", []string{name + ".md"}, "", fmt.Sprintf("%d changes", len(out)), start, err)
+	c.log("history", []string{RefOf(store, name) + ".md"}, "", fmt.Sprintf("%d changes", len(out)), start, err)
 	return out, err
 }
 
@@ -241,7 +257,7 @@ func (c Client) Restore(name string, n int) (string, error) {
 		return "", err
 	}
 	if n < 1 || n > len(hist) {
-		return "", fmt.Errorf("%s has %d changes; pick 1-%d", NameOf(name), len(hist), len(hist))
+		return "", fmt.Errorf("%s has %d changes; pick 1-%d", name, len(hist), len(hist))
 	}
 	ch := hist[n-1]
 	if ch.Old == "" {
@@ -251,7 +267,8 @@ func (c Client) Restore(name string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return c.apply(Op{Op: "write", Name: old.Name, Type: old.Type, Description: old.Description, Body: old.Body,
+	store, _ := c.ref(name)
+	return c.apply(Op{Op: "write", Name: RefOf(store, old.Name), Type: old.Type, Description: old.Description, Body: old.Body,
 		Reason: fmt.Sprintf("restored the version before the %s of %s", ch.Op, ch.At.UTC().Format(time.RFC3339))})
 }
 
