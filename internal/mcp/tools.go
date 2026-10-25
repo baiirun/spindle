@@ -86,10 +86,7 @@ func MemoryTools(p memory.Project, agent string, startDream func() error) []Tool
 			Description: "The current memory index (MEMORY.md), in case it changed since the session started.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				if s := c.Index(); s != "" {
-					return s, nil
-				}
-				return "(empty)", nil
+				return c.Index(), nil
 			},
 		},
 		{

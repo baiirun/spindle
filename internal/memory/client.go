@@ -90,10 +90,17 @@ func (c Client) Search(query string, limit int) (hits []Memory, total int, err e
 	return hits, total, err
 }
 
-// Index is MEMORY.md as it is now.
+// Index is MEMORY.md as it is now, or a line saying there is nothing yet.
 func (c Client) Index() string {
 	c.log("index", nil, "", "", time.Now(), nil)
-	return c.ReadIndex()
+	s := c.ReadIndex()
+	if strings.TrimSpace(s) == "" {
+		return fmt.Sprintf("No memories yet for %s.\n", c.Root)
+	}
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return s
 }
 
 // Status summarizes the project's memory and bookkeeping.

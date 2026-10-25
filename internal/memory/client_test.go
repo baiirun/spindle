@@ -95,3 +95,10 @@ func TestOneDreamAtATime(t *testing.T) {
 		t.Errorf("err %v, want ErrDreaming", err)
 	}
 }
+
+func TestEmptyIndexSaysSo(t *testing.T) {
+	p := project(t)
+	if got := p.Client("cli").Index(); !strings.HasPrefix(got, "No memories yet") {
+		t.Errorf("index %q", got)
+	}
+}
