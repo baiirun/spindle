@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"spindle/internal/model"
+	"spindle/internal/transcript"
 )
 
 // Recall follows Claude Code's: on each real user message a side model sees
@@ -32,14 +33,18 @@ const (
 
 // Selection is one message's pending pick.
 type Selection struct {
-	ID        string    `json:"id"`
-	Agent     string    `json:"agent,omitempty"`
-	Prompt    string    `json:"prompt"`
-	Started   time.Time `json:"started"`
-	Done      bool      `json:"done"`
-	Files     []string  `json:"files,omitempty"`
-	Err       string    `json:"err,omitempty"`
-	Delivered bool      `json:"delivered"`
+	ID     string `json:"id"`
+	Agent  string `json:"agent,omitempty"`
+	Prompt string `json:"prompt"`
+	// The session's context, for the selector.
+	Project    string    `json:"project,omitempty"`
+	Cwd        string    `json:"cwd,omitempty"`
+	Transcript string    `json:"transcript,omitempty"`
+	Started    time.Time `json:"started"`
+	Done       bool      `json:"done"`
+	Files      []string  `json:"files,omitempty"`
+	Err        string    `json:"err,omitempty"`
+	Delivered  bool      `json:"delivered"`
 }
 
 // RecallState is one session's recall bookkeeping.
@@ -52,7 +57,7 @@ type RecallState struct {
 var unsafeID = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func (p Project) recallPath(session string) string {
-	return filepath.Join(p.Dir, "recall", unsafeID.ReplaceAllString(session, "_")+".json")
+	return filepath.Join(p.Home, "recall", unsafeID.ReplaceAllString(session, "_")+".json")
 }
 
 // withRecall reads, changes and writes a session's recall state under its own lock.
@@ -82,7 +87,7 @@ func (p Project) withRecall(session string, f func(*RecallState) error) error {
 // StartRecall records a pending selection for a user message and returns
 // its ID, or "" when recall is skipped: a one-word prompt, no memories, or the
 // session's recall budget spent.
-func (p Project) StartRecall(session, agent, prompt string, now time.Time) (string, error) {
+func (p Project) StartRecall(session, agent, prompt, transcript string, now time.Time) (string, error) {
 	skipped := func(why string) {
 		p.Log(Event{At: now, Kind: "skip", Agent: agent, Session: session, Name: "recall", Prompt: prompt, Note: why})
 	}
@@ -105,7 +110,7 @@ func (p Project) StartRecall(session, agent, prompt string, now time.Time) (stri
 			skip = true
 			return nil
 		}
-		st.Pending = &Selection{ID: id, Agent: agent, Prompt: prompt, Started: now.UTC()}
+		st.Pending = &Selection{ID: id, Agent: agent, Prompt: prompt, Started: now.UTC(), Project: p.Name, Cwd: p.Cwd, Transcript: transcript}
 		return nil
 	})
 	if skip {
@@ -118,8 +123,10 @@ func (p Project) StartRecall(session, agent, prompt string, now time.Time) (stri
 }
 
 // RunSelect runs the selector for a pending selection and stores its picks.
-// With local set it uses a word-overlap match instead of a model.
-func (p Project) RunSelect(ctx context.Context, session, id string, m model.Model, local bool) error {
+// With local set it uses a word-overlap match instead of a model. Only p's
+// home matters: the session's context comes with the selection.
+func RunSelect(ctx context.Context, home, session, id string, m model.Model, local bool) error {
+	p := Project{Home: home}
 	var sel *Selection
 	var surfaced []string
 	p.withRecall(session, func(st *RecallState) error {
@@ -135,6 +142,10 @@ func (p Project) RunSelect(ctx context.Context, session, id string, m model.Mode
 	if sel == nil {
 		return nil // superseded by a newer message
 	}
+	if sel.Project != "" {
+		p = Store(home, sel.Project)
+	}
+	p.Cwd = sel.Cwd
 	mems, err := p.LoadAll()
 	if err != nil {
 		return err
@@ -144,7 +155,7 @@ func (p Project) RunSelect(ctx context.Context, session, id string, m model.Mode
 	if local {
 		files, how = localSelect(mems, sel.Prompt, surfaced), "word match"
 	} else {
-		files, err = modelSelect(ctx, m, mems, sel.Prompt, surfaced)
+		files, err = modelSelect(ctx, m, mems, sel.Prompt, surfaced, p.selectContext(sel, surfaced))
 	}
 	p.Log(Event{Kind: "select", Agent: sel.Agent, Session: session, Prompt: sel.Prompt, Files: files, Ms: time.Since(start).Milliseconds(),
 		Note: fmt.Sprintf("%s, %d candidates", how, min(len(mems), SelectCandidates)), Err: errString(err)})
@@ -160,11 +171,14 @@ func (p Project) RunSelect(ctx context.Context, session, id string, m model.Mode
 	})
 }
 
-func modelSelect(ctx context.Context, m model.Model, mems []Memory, prompt string, surfaced []string) ([]string, error) {
+func modelSelect(ctx context.Context, m model.Model, mems []Memory, prompt string, surfaced []string, session string) ([]string, error) {
 	sort.Strings(surfaced)
-	msg := "Available memories:\n" + fileList(mems, SelectCandidates)
+	msg := "Available memories, named <project>/<file> (global/ ones apply to every project):\n" + fileList(mems, SelectCandidates)
 	if len(surfaced) > 0 {
 		msg += "\nAlready returned for earlier queries in this conversation: " + strings.Join(surfaced, ", ") + "\n"
+	}
+	if session != "" {
+		msg += "\n" + session
 	}
 	msg += "\nSelect memories relevant to:\n" + prompt
 	var out struct {
@@ -174,19 +188,86 @@ func modelSelect(ctx context.Context, m model.Model, mems []Memory, prompt strin
 		return nil, err
 	}
 	known := map[string]bool{}
+	byBare := map[string][]string{} // a pick without its project, if only one project has it
 	for i, mem := range mems {
 		if i < SelectCandidates {
 			known[mem.File()] = true
+			b := bare(mem).File()
+			byBare[b] = append(byBare[b], mem.File())
 		}
 	}
 	var files []string
 	for _, f := range out.Selected {
 		f = normRef(f)
+		if refs := byBare[f]; !known[f] && len(refs) == 1 {
+			f = refs[0]
+		}
 		if known[f] && !contains(files, f) && len(files) < SelectMax {
 			files = append(files, f)
 		}
 	}
 	return files, nil
+}
+
+// selectContext tells the selector where the session is: its folder and
+// project, the projects it has already drawn on, and the user's last few
+// messages. It helps rank; memories of any project can still be picked.
+func (p Project) selectContext(sel *Selection, surfaced []string) string {
+	var b strings.Builder
+	b.WriteString("Session context:\n")
+	if p.Cwd != "" {
+		fmt.Fprintf(&b, "- folder: %s\n", p.Cwd)
+	}
+	if p.Name == "" {
+		b.WriteString("- project: none linked to this folder\n")
+	} else {
+		fmt.Fprintf(&b, "- project: %s", p.Name)
+		if d := p.Meta().Description; d != "" {
+			b.WriteString(" (" + clipRunes(d, 200) + ")")
+		}
+		b.WriteString("\n")
+	}
+	var drawn []string
+	for _, f := range surfaced {
+		if st, _ := splitRef(f); st != "" && !contains(drawn, st) {
+			drawn = append(drawn, st)
+		}
+	}
+	if len(drawn) > 0 {
+		sort.Strings(drawn)
+		fmt.Fprintf(&b, "- memories already recalled from: %s\n", strings.Join(drawn, ", "))
+	}
+	if recent := recentUser(sel.Transcript, sel.Prompt, 3); len(recent) > 0 {
+		b.WriteString("- the user's previous messages, oldest first:\n")
+		for _, r := range recent {
+			fmt.Fprintf(&b, "  - %q\n", clipRunes(oneLine(r), 300))
+		}
+	}
+	return b.String()
+}
+
+// recentUser is the last n user messages of a transcript before prompt.
+func recentUser(path, prompt string, n int) []string {
+	if path == "" {
+		return nil
+	}
+	s, err := transcript.Read(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, m := range s.Messages {
+		if m.Role == "user" && strings.TrimSpace(m.Text) != "" {
+			out = append(out, m.Text)
+		}
+	}
+	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == strings.TrimSpace(prompt) {
+		out = out[:len(out)-1]
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
 }
 
 // localSelect matches prompt words against names and descriptions: Claude
@@ -339,9 +420,7 @@ func recalled(m Memory, now time.Time) string {
 	if days := int(now.Sub(m.Modified).Hours() / 24); days >= 1 {
 		fmt.Fprintf(&b, "This memory is %d days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.\n\n", days)
 	}
-	bare := m
-	bare.Name = strings.TrimPrefix(m.Name, GlobalPrefix)
-	body := bare.Render()
+	body := bare(m).Render()
 	if len(body) > FileBytes {
 		body = clipRunes(body, FileBytes) + "\n(cut; memory_read for the rest)"
 	}
@@ -381,11 +460,10 @@ func (p Project) ResetRecall(session string) error {
 	})
 }
 
-// normRef normalizes a selector's file name, keeping a global/ prefix.
+// normRef normalizes a selector's file name, keeping its project.
 func normRef(f string) string {
-	f = strings.TrimSpace(f)
-	if strings.HasPrefix(f, GlobalPrefix) {
-		return GlobalPrefix + NameOf(strings.TrimPrefix(f, GlobalPrefix)) + ".md"
+	if st, name := splitRef(f); st != "" {
+		return st + "/" + name + ".md"
 	}
 	return NameOf(f) + ".md"
 }

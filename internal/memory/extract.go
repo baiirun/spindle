@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,11 +21,10 @@ type Cursor struct {
 	At      time.Time `json:"at"` // last pass
 }
 
-// State is the project's bookkeeping.
+// State is a store's dream gate.
 type State struct {
-	Cursors   map[string]*Cursor `json:"cursors"` // by transcript path
-	LastDream time.Time          `json:"last_dream"`
-	// Sessions that touched the project since the last dream, with their transcripts.
+	LastDream time.Time `json:"last_dream"`
+	// Sessions that touched the store since the last dream, with their transcripts.
 	Sessions map[string]string `json:"sessions_since_dream"`
 }
 
@@ -32,9 +32,9 @@ func (p Project) statePath() string { return filepath.Join(p.Dir, "state.json") 
 
 func (p Project) LoadState() (State, error) {
 	s := State{}
-	err := readJSON(p.statePath(), &s)
-	if s.Cursors == nil {
-		s.Cursors = map[string]*Cursor{}
+	var err error
+	if p.Name != "" {
+		err = readJSON(p.statePath(), &s)
 	}
 	if s.Sessions == nil {
 		s.Sessions = map[string]string{}
@@ -43,6 +43,48 @@ func (p Project) LoadState() (State, error) {
 }
 
 func (p Project) SaveState(s State) error { return writeJSON(p.statePath(), s) }
+
+// markSession records that a session touched the store, for the dream gate.
+func (p Project) markSession(session, transcript string) error {
+	if !p.Exists() {
+		return nil
+	}
+	unlock, err := p.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	st, err := p.LoadState()
+	if err != nil {
+		return err
+	}
+	st.Sessions[session] = transcript
+	return p.SaveState(st)
+}
+
+// Cursors reads how far extraction has read each transcript.
+func Cursors(home string) (map[string]*Cursor, error) {
+	c := map[string]*Cursor{}
+	err := readJSON(filepath.Join(home, "cursors.json"), &c)
+	return c, err
+}
+
+func updateCursors(home string, f func(map[string]*Cursor)) error {
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockFile(filepath.Join(home, "cursors.lock"), true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	c, err := Cursors(home)
+	if err != nil {
+		return err
+	}
+	f(c)
+	return writeJSON(filepath.Join(home, "cursors.json"), c)
+}
 
 // Extraction thresholds, after Claude Code's: it runs after every turn, but
 // not when the user wrote too little to be worth a pass, and not when the main
@@ -61,7 +103,8 @@ type ExtractResult struct {
 }
 
 // Extract runs one extraction pass over a transcript's messages since its
-// cursor. Model calls run without the project lock; writes take it.
+// cursor. p is the session's context: its project, which may be none, and
+// folder. Model calls run without locks; each store's writes take its lock.
 func Extract(ctx context.Context, p Project, path string, m model.Model, now time.Time) (ExtractResult, error) {
 	var res ExtractResult
 	s, err := transcript.Read(path)
@@ -72,18 +115,15 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 		res.Skip = "subagent"
 		return res, nil
 	}
-	if err := p.Init(); err != nil {
-		return res, err
-	}
-	state, err := p.LoadState()
+	cursors, err := Cursors(p.Home)
 	if err != nil {
 		return res, err
 	}
-	cur := state.Cursors[path]
-	if cur == nil {
-		cur = &Cursor{Agent: s.Agent, Session: s.ID}
+	line := 0
+	if cur := cursors[path]; cur != nil {
+		line = cur.Line
 	}
-	fresh := s.Since(cur.Line)
+	fresh := s.Since(line)
 	userChars := 0
 	for _, msg := range fresh {
 		if msg.Role == "user" {
@@ -103,11 +143,7 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 		ev := Event{Kind: "extract", Agent: s.Agent, Session: s.ID, Note: fmt.Sprintf("%d new messages", len(fresh))}
 		ops, err := extractOps(ctx, p, m, fresh)
 		if err == nil {
-			var unlock func()
-			if unlock, err = p.Lock(); err == nil {
-				res.Result, err = p.ApplyAll(ops, "extract", s.ID, now)
-				unlock()
-			}
+			res.Result, err = p.ApplyAll(ops, "extract", s.ID, now)
 		}
 		ev.Ms, ev.Files, ev.Err = time.Since(start).Milliseconds(), res.Changed, errString(err)
 		if err == nil && len(res.Changed) == 0 {
@@ -123,22 +159,24 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 	if len(fresh) == 0 {
 		return res, nil
 	}
-	unlock, err := p.Lock()
-	if err != nil {
-		return res, err
+	// The dream gate counts the session for its project and for every store
+	// it changed.
+	touched := map[string]bool{p.Name: p.Name != ""}
+	for _, c := range res.Changed {
+		if st, _ := splitRef(c[1:]); st != "" {
+			touched[st] = true
+		}
 	}
-	defer unlock()
-	if state, err = p.LoadState(); err != nil {
-		return res, err
+	for name, ok := range touched {
+		if ok {
+			if err := Store(p.Home, name).markSession(s.ID, path); err != nil {
+				return res, err
+			}
+		}
 	}
-	cur = state.Cursors[path]
-	if cur == nil {
-		cur = &Cursor{Agent: s.Agent, Session: s.ID}
-	}
-	cur.Line, cur.At = fresh[len(fresh)-1].Line, now.UTC()
-	state.Cursors[path] = cur
-	state.Sessions[s.ID] = path
-	return res, p.SaveState(state)
+	return res, updateCursors(p.Home, func(c map[string]*Cursor) {
+		c[path] = &Cursor{Agent: s.Agent, Session: s.ID, Line: fresh[len(fresh)-1].Line, At: now.UTC()}
+	})
 }
 
 // extractOps asks for the files to read, then for the writes.
@@ -156,7 +194,8 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 		NothingToSave bool     `json:"nothing_to_save"`
 		Read          []string `json:"read"`
 	}
-	prompt := fmt.Sprintf("## Existing memory files\n\n%s\n## New messages (~%d)\n\n%s", orNone(list), len(fresh), msgs)
+	session := p.sessionText()
+	prompt := fmt.Sprintf("%s## Existing memory files\n\n%s\n## New messages (~%d)\n\n%s", session, orNone(list), len(fresh), msgs)
 	if err := completeJSON(ctx, m, extractReadSystem, prompt, extractReadSchema, &step1); err != nil {
 		return nil, fmt.Errorf("extract step 1: %w", err)
 	}
@@ -169,17 +208,43 @@ func extractOps(ctx context.Context, p Project, m model.Model, fresh []transcrip
 			break
 		}
 		if mem, ok := p.GetRef(name); ok {
-			fmt.Fprintf(&files, "<file name=%q>\n%s</file>\n\n", mem.File(), mem.Render())
+			fmt.Fprintf(&files, "<file name=%q>\n%s</file>\n\n", mem.File(), bare(mem).Render())
 		}
 	}
 	var step2 struct {
 		Ops []Op `json:"ops"`
 	}
-	prompt = fmt.Sprintf("## Files you read\n\n%s\n## All memory files\n\n%s\n## New messages (~%d)\n\n%s", orNone(files.String()), orNone(list), len(fresh), msgs)
+	prompt = fmt.Sprintf("%s## Files you read\n\n%s\n## All memory files\n\n%s\n## New messages (~%d)\n\n%s", session, orNone(files.String()), orNone(list), len(fresh), msgs)
 	if err := completeJSON(ctx, m, extractWriteSystem, prompt, opsSchema, &step2); err != nil {
 		return nil, fmt.Errorf("extract step 2: %w", err)
 	}
 	return step2.Ops, nil
+}
+
+// sessionText tells a side pass which project the session is in and which
+// projects exist.
+func (p Project) sessionText() string {
+	var b strings.Builder
+	b.WriteString("## Session\n\n")
+	if p.Cwd != "" {
+		fmt.Fprintf(&b, "Folder: %s\n", p.Cwd)
+	}
+	if p.Name == "" {
+		b.WriteString("Project: none linked to this folder\n")
+	} else {
+		fmt.Fprintf(&b, "Project: %s", p.Name)
+		if d := p.Meta().Description; d != "" {
+			b.WriteString(" (" + d + ")")
+		}
+		b.WriteString("\n")
+	}
+	ps, _ := Projects(p.Home)
+	var names []string
+	for _, o := range ps {
+		names = append(names, o.Name)
+	}
+	fmt.Fprintf(&b, "All projects: %s, global\n\n", strings.Join(names, ", "))
+	return b.String()
 }
 
 // fileList is the "[type] file (mtime): description" list Claude Code shows

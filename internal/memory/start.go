@@ -6,11 +6,12 @@ const StartBudget = 9_500
 
 // StartContext is what a session gets at start, resume, clear and after
 // compaction: the memory instructions and the index, the counterpart of
-// Claude Code loading its memory section and MEMORY.md.
+// Claude Code loading its memory section and MEMORY.md. p is the session's
+// context; the indexes cover its project, global, and a line per other project.
 func (p Project) StartContext() string {
 	text := Instructions + "\n\n" + p.indexText()
 	if len(text) > StartBudget {
-		text = clipRunes(text, StartBudget-80) + "\n(index cut here; memory_search finds the rest)\n"
+		text = clipRunes(text, StartBudget-80) + "\n(index cut here; memory_search and memory_projects find the rest)\n"
 	}
 	return text
 }

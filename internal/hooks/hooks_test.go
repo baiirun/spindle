@@ -25,7 +25,9 @@ func setup(t *testing.T) *env {
 	t.Setenv(memory.InnerEnv, "")
 	e := &env{root: t.TempDir()}
 	os.Mkdir(filepath.Join(e.root, ".git"), 0o755)
-	e.h = Handler{Home: t.TempDir(), Agent: "claude", RecallWait: time.Second,
+	home := t.TempDir()
+	memory.Store(home, "proj").Link(e.root)
+	e.h = Handler{Home: home, Agent: "claude", RecallWait: time.Second,
 		Spawn: func(args ...string) error { e.spawned = append(e.spawned, args); return nil }}
 	return e
 }
@@ -57,11 +59,11 @@ func TestSessionStart(t *testing.T) {
 
 func TestPromptRecallLocalAndStop(t *testing.T) {
 	e := setup(t)
-	p := memory.At(e.h.Home, e.root)
+	p := memory.Store(e.h.Home, "proj")
 	p.Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
 	e.h.LocalRecall = true
 	o := e.run(t, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"})
-	if !strings.Contains(o.HookSpecificOutput.AdditionalContext, "Memory: event-log-store.md") {
+	if !strings.Contains(o.HookSpecificOutput.AdditionalContext, "Memory: proj/event-log-store.md") {
 		t.Fatalf("recall = %+v", o)
 	}
 	e.run(t, map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": "/t/s.jsonl"})
@@ -76,7 +78,7 @@ func TestPromptRecallLocalAndStop(t *testing.T) {
 
 func TestPromptRecallAsync(t *testing.T) {
 	e := setup(t)
-	p := memory.At(e.h.Home, e.root)
+	p := memory.Store(e.h.Home, "proj")
 	p.Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
 	e.h.RecallWait = 100 * time.Millisecond
 	o := e.run(t, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"})
@@ -85,7 +87,7 @@ func TestPromptRecallAsync(t *testing.T) {
 	}
 	// The selector finishes after the prompt went in; the next tool call carries it.
 	args := e.spawned[0]
-	p.RunSelect(context.Background(), "s", args[6], nil, true)
+	memory.RunSelect(context.Background(), p.Home, "s", args[4], nil, true)
 	o = e.run(t, map[string]any{"hook_event_name": "PostToolUse", "session_id": "s"})
 	if !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store.md") || o.HookSpecificOutput.HookEventName != "PostToolUse" {
 		t.Fatalf("PostToolUse = %+v", o)

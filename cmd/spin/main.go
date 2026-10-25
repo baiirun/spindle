@@ -1,5 +1,6 @@
-// Command spin is spindle's CLI: long-term project memory for Claude Code and
-// Codex, through their hooks and an MCP server. See docs/design.md.
+// Command spin is spindle's CLI: long-term memory across all of a user's
+// projects for Claude Code and Codex, through their hooks and an MCP server.
+// See docs/design.md.
 package main
 
 import (
@@ -26,15 +27,17 @@ import (
 const usage = `usage: spin <command> [flags]
 
   hook      handle one Claude Code or Codex hook event (JSON on stdin)
-  mcp       serve the project's memory tools over stdio
-  status    how many memories, last dream, how far each session was read
+  mcp       serve the memory tools over stdio
+  status    this folder's project: how many memories, last dream; counts for the rest
+  projects  list every project with its folders and memory count
+  project   create or describe a project, link or unlink a folder
   show      print one memory in full
   search    find memories by words in their name, description or body
   write     create or replace a memory (body on stdin)
   rm        delete a memory
-  index     print MEMORY.md
+  index     print what a session here starts with: this project's index, global, the rest
   history   one memory's changes, who made them and the text before (--restore N puts one back)
-  log       show the project's memory activity: recalls, saves, tool calls (-f to follow)
+  log       show memory activity across projects: recalls, saves, tool calls (-f to follow)
   install   print the hook and MCP config for claude or codex
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
   extract   run extraction on one transcript now
@@ -65,6 +68,10 @@ func run(home, cmd string, args []string) error {
 		return runMCP(home, args)
 	case "status":
 		return runStatus(home, args)
+	case "projects":
+		return runProjects(home, args)
+	case "project":
+		return runProject(home, args)
 	case "show":
 		return runShow(home, args)
 	case "search":
@@ -141,29 +148,90 @@ func spawn(home string) func(args ...string) error {
 }
 
 func projectFlag(fs *flag.FlagSet) *string {
-	return fs.String("project", "", "project directory (default: the working directory)")
+	return fs.String("project", "", "the session's project, or global (default: the one this folder is linked to)")
 }
 
 func runMCP(home string, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
-	dir := projectFlag(fs)
+	name := projectFlag(fs)
 	agent := fs.String("agent", "", "claude or codex, for the activity log")
 	fs.Parse(args)
-	p, err := memory.Resolve(home, *dir)
+	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
+	c := memory.NewClient(home, cwd, *name, *agent)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent, func() error {
-		return spawn(home)("dream", "--project", p.Root, "--force", "--agent", orClaude(*agent))
+	return mcp.Server{Name: "spindle", Version: "0.2.0", Tools: mcp.MemoryTools(c, func() error {
+		p := c.Context()
+		if p.Name == "" {
+			return fmt.Errorf("this folder isn't linked to a project; link one with memory_project first")
+		}
+		return spawn(home)("dream", "--project", p.Name, "--force", "--agent", orClaude(*agent))
 	})}.Serve(ctx, os.Stdin, os.Stdout)
 }
 
-// client resolves the project from --project or the working directory.
-func client(home, dir string) (memory.Client, error) {
-	p, err := memory.Resolve(home, dir)
-	return p.Client("cli"), err
+// client is the CLI's client for the working directory, or the --project.
+func client(home, project string) (memory.Client, error) {
+	cwd, err := os.Getwd()
+	return memory.NewClient(home, cwd, project, "cli"), err
+}
+
+func runProjects(home string, args []string) error {
+	fs := flag.NewFlagSet("projects", flag.ExitOnError)
+	fs.Parse(args)
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	ps, err := c.Projects()
+	if err != nil {
+		return err
+	}
+	fmt.Print(memory.FormatProjects(ps))
+	return nil
+}
+
+func runProject(home string, args []string) error {
+	fs := flag.NewFlagSet("project", flag.ExitOnError)
+	desc := fs.String("description", "", "one line on what the project is about")
+	link := fs.String("link", "", "link this folder to the project (. is the working directory's repository root)")
+	unlink := fs.String("unlink", "", "unlink this folder")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin project [--description D] [--link DIR] [--unlink DIR] NAME\n\nCreates the project if it doesn't exist. Folders only hint at a project; every project's memories stay visible everywhere.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() > 1 { // flags after the name
+		name := fs.Arg(0)
+		fs.Parse(fs.Args()[1:])
+		fs.Parse(append([]string{name}, fs.Args()...))
+	}
+	if fs.NArg() != 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	if *link != "" && *link != "." {
+		if *link, err = filepath.Abs(*link); err != nil {
+			return err
+		}
+	}
+	if *unlink != "" {
+		if *unlink, err = filepath.Abs(*unlink); err != nil {
+			return err
+		}
+	}
+	msg, err := c.SetProject(fs.Arg(0), *desc, *link, *unlink)
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
 }
 
 func runStatus(home string, args []string) error {
@@ -185,7 +253,7 @@ func runStatus(home string, args []string) error {
 func runShow(home string, args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	dir := projectFlag(fs)
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin show [--project DIR] NAME") }
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin show [--project P] NAME") }
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fs.Usage()
@@ -207,7 +275,7 @@ func runSearch(home string, args []string) error {
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
 	dir := projectFlag(fs)
 	n := fs.Int("n", 10, "at most this many results")
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin search [--project DIR] [-n N] WORDS...") }
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin search [--project P] [-n N] WORDS...") }
 	fs.Parse(args)
 	if fs.NArg() == 0 {
 		fs.Usage()
@@ -232,7 +300,7 @@ func runWrite(home string, args []string) error {
 	desc := fs.String("description", "", "one line, used to decide relevance (default: keep the existing one)")
 	global := fs.Bool("global", false, "save to the global store, loaded in every project (or name it global/NAME)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: spin write [--project DIR] [--type T] [--description D] NAME < body.md\n\nThe body is read from stdin and replaces the whole memory.")
+		fmt.Fprintln(fs.Output(), "usage: spin write [--project P] [--global] [--type T] [--description D] NAME < body.md\n\nThe body is read from stdin and replaces the whole memory. NAME may be PROJECT/NAME.")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -250,7 +318,7 @@ func runWrite(home string, args []string) error {
 	}
 	o := memory.Op{Name: fs.Arg(0), Type: *typ, Description: *desc, Body: string(body)}
 	if *global {
-		o.Scope = "global"
+		o.Project = memory.GlobalName
 	}
 	msg, err := c.Write(o)
 	if err != nil {
@@ -264,7 +332,7 @@ func runRm(home string, args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ExitOnError)
 	dir := projectFlag(fs)
 	reason := fs.String("reason", "", "why, for the change log")
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin rm [--project DIR] [--reason WHY] NAME") }
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin rm [--project P] [--reason WHY] NAME") }
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fs.Usage()
@@ -343,7 +411,7 @@ func runDream(home string, args []string) error {
 func runExtract(home string, args []string) error {
 	fs := flag.NewFlagSet("extract", flag.ExitOnError)
 	dir := projectFlag(fs)
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin extract [--project DIR] transcript.jsonl") }
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: spin extract [--project P] transcript.jsonl") }
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		fs.Usage()
@@ -357,16 +425,11 @@ func runExtract(home string, args []string) error {
 	if err != nil {
 		return err
 	}
-	root := *dir
-	if root == "" {
-		if root, err = memory.TranscriptCwd(path); err != nil {
-			return err
-		}
-	}
-	c, err := client(home, root)
+	cwd, err := memory.TranscriptCwd(path)
 	if err != nil {
 		return err
 	}
+	c := memory.NewClient(home, cwd, *dir, "cli")
 	os.Setenv(memory.InnerEnv, "1")
 	res, err := c.Extract(context.Background(), path, model.For(agent, model.Extract))
 	if err != nil {
@@ -376,7 +439,7 @@ func runExtract(home string, args []string) error {
 		fmt.Println("skipped:", res.Skip)
 		return nil
 	}
-	fmt.Printf("%s: %d written, %d deleted, %d skipped\n", c.Name(), res.Written, res.Deleted, res.Result.Skipped)
+	fmt.Printf("%d written, %d deleted, %d skipped: %s\n", res.Written, res.Deleted, res.Result.Skipped, strings.Join(res.Changed, " "))
 	return nil
 }
 
@@ -392,34 +455,33 @@ func runWorker(home string, args []string) error {
 
 func runSelect(home string, args []string) error {
 	fs := flag.NewFlagSet("select", flag.ExitOnError)
-	root := fs.String("root", "", "project root")
 	session := fs.String("session", "", "session ID")
 	id := fs.String("id", "", "pending selection ID")
 	agent := fs.String("agent", "claude", "claude or codex")
 	fs.Parse(args)
-	if *root == "" || *id == "" {
-		return fmt.Errorf("--root and --id are required")
+	if *id == "" {
+		return fmt.Errorf("--id is required")
 	}
 	os.Setenv(memory.InnerEnv, "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	return memory.At(home, *root).RunSelect(ctx, *session, *id, model.For(*agent, model.Select), false)
+	return memory.RunSelect(ctx, home, *session, *id, model.For(*agent, model.Select), false)
 }
 
 func runLog(home string, args []string) error {
 	fs := flag.NewFlagSet("log", flag.ExitOnError)
-	dir := projectFlag(fs)
+	project := fs.String("project", "", "only sessions in this project")
 	follow := fs.Bool("f", false, "keep printing new events")
 	n := fs.Int("n", 50, "show the last n events (0: all)")
 	session := fs.String("session", "", "only this session (a prefix is enough)")
 	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, call, extract, dream")
 	asJSON := fs.Bool("json", false, "print raw JSON lines")
 	fs.Parse(args)
-	c, err := client(home, *dir)
+	c, err := client(home, "")
 	if err != nil {
 		return err
 	}
-	f := memory.LogFilter{Session: *session, Kind: *kind, Last: *n}
+	f := memory.LogFilter{Session: *session, Kind: *kind, Project: *project, Last: *n}
 	print := func(evs []memory.Event) {
 		if !*asJSON {
 			fmt.Print(memory.FormatEvents(evs))
@@ -462,7 +524,7 @@ func runHistory(home string, args []string) error {
 	full := fs.Bool("full", false, "show each earlier version's text")
 	restore := fs.Int("restore", 0, "put back the version change N replaced or deleted")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: spin history [--project DIR] [--full] [--restore N] NAME")
+		fmt.Fprintln(fs.Output(), "usage: spin history [--project P] [--full] [--restore N] NAME")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)

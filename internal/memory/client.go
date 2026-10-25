@@ -11,27 +11,53 @@ import (
 	"spindle/internal/model"
 )
 
-// Client is the one way in to a project's memory for anything outside the
-// hooks: the MCP tools and the CLI are thin wrappers over it, so they can do
-// the same things and print the same text. Each call goes to the activity log
-// with the caller (claude, codex or cli).
+// Client is the one way in to memory for anything outside the hooks: the
+// MCP tools and the CLI are thin wrappers over it, so they can do the same
+// things and print the same text. Each call goes to the activity log with the
+// caller (claude, codex or cli). The session's project is worked out from the
+// folder on every call, so linking a folder mid-session takes effect at once.
 type Client struct {
-	Project
+	Home   string
+	Cwd    string // the session's folder
+	Pin    string // a project name that overrides the folder's hint
 	Caller string
 }
 
-// Client returns a client for caller.
-func (p Project) Client(caller string) Client { return Client{p, caller} }
+// NewClient is a client for a session in cwd; project, if set, pins the
+// session's project.
+func NewClient(home, cwd, project, caller string) Client {
+	return Client{Home: home, Cwd: cwd, Pin: project, Caller: caller}
+}
+
+// Client returns a client pinned to p.
+func (p Project) Client(caller string) Client {
+	return Client{Home: p.Home, Cwd: p.Cwd, Pin: p.Name, Caller: caller}
+}
+
+// Context is the session's project (Name "" if the folder has none).
+func (c Client) Context() Project {
+	if c.Pin != "" {
+		p := Store(c.Home, c.Pin)
+		p.Cwd = c.Cwd
+		return p
+	}
+	p, err := Hint(c.Home, c.Cwd)
+	if err != nil {
+		return Project{Home: c.Home, Cwd: c.Cwd}
+	}
+	return p
+}
 
 // Read returns one memory in full.
 func (c Client) Read(name string) (Memory, error) {
 	start := time.Now()
-	m, ok := c.GetRef(name)
+	p := c.Context()
+	m, ok := p.GetRef(name)
 	var err error
 	if !ok {
 		err = fmt.Errorf("no memory %q", m.Name)
 	}
-	c.log("read", []string{m.Name + ".md"}, "", "", start, err)
+	c.log(p, "read", []string{m.Name + ".md"}, "", "", start, err)
 	return m, err
 }
 
@@ -48,111 +74,176 @@ func (c Client) Delete(name, reason string) (string, error) {
 
 func (c Client) apply(o Op) (string, error) {
 	start := time.Now()
+	p := c.Context()
+	ref := o.Name
 	msg, err := func() (string, error) {
-		unlock, err := c.Lock()
+		s, bareOp, err := p.route(o)
 		if err != nil {
 			return "", err
 		}
-		defer unlock()
+		ref = RefOf(s, NameOf(bareOp.Name))
+		existed := s.Exists()
 		by := "agent" // extraction skips messages the agent already saved for
 		if c.Caller == "cli" {
 			by = "cli"
 		}
-		res, err := c.ApplyAll([]Op{o}, by, "", time.Now())
+		res, err := p.ApplyAll([]Op{o}, by, "", time.Now())
 		if err != nil {
 			return "", err
 		}
-		s, bare := c.scopeFor(o)
-		name := RefOf(s, NameOf(bare.Name))
 		switch {
 		case res.Written > 0:
-			return "Saved " + name + ".md.", nil
+			msg := "Saved " + ref + ".md."
+			if !existed && !s.IsGlobal() {
+				msg += " New project " + s.Name + "."
+			}
+			return msg, nil
 		case res.Deleted > 0:
-			return "Deleted " + name + ".md.", nil
+			return "Deleted " + ref + ".md.", nil
 		case o.Op == "delete":
-			return "", fmt.Errorf("no memory %q", name)
+			return "", fmt.Errorf("no memory %q", ref)
 		case res.Skipped > 0:
 			return "", fmt.Errorf("not saved: name, a valid type, description and body are all required")
 		}
 		return "Unchanged.", nil
 	}()
-	s, bare := c.scopeFor(o)
-	c.log(o.Op, []string{RefOf(s, NameOf(bare.Name)) + ".md"}, "", oneLine(o.Reason), start, err)
+	c.log(p, o.Op, []string{ref + ".md"}, "", oneLine(o.Reason), start, err)
 	return msg, err
 }
 
 // Search ranks memories by the query's words; total is how many memories exist.
 func (c Client) Search(query string, limit int) (hits []Memory, total int, err error) {
 	start := time.Now()
-	mems, err := c.LoadAll()
+	p := c.Context()
+	mems, err := p.LoadAll()
 	if err == nil {
 		hits, total = Search(mems, query, limit), len(mems)
 	}
-	c.log("search", nil, query, fmt.Sprintf("%d of %d match", len(hits), total), start, err)
+	c.log(p, "search", nil, query, fmt.Sprintf("%d of %d match", len(hits), total), start, err)
 	return hits, total, err
 }
 
-// Index is MEMORY.md as it is now, or a line saying there is nothing yet.
+// Index is what a session starts with: this project's index, the global
+// one, and a line per other project.
 func (c Client) Index() string {
-	c.log("index", nil, "", "", time.Now(), nil)
-	return c.indexText()
+	p := c.Context()
+	c.log(p, "index", nil, "", "", time.Now(), nil)
+	return p.indexText()
 }
 
-// indexText is the project's index, then the global one.
-func (p Project) indexText() string {
-	var b strings.Builder
-	if s := strings.TrimSpace(p.ReadIndex()); s != "" {
-		b.WriteString(s + "\n")
-	} else {
-		fmt.Fprintf(&b, "No memories yet for %s.\n", p.Root)
-	}
-	if g := strings.TrimSpace(p.GlobalIndex()); g != "" {
-		b.WriteString("\n# Global memory (every project)\n\n" + g + "\n")
-	}
-	return b.String()
-}
-
-// Status summarizes the project's memory and bookkeeping.
+// Status summarizes the session's project and the rest of memory.
 type Status struct {
-	Root, MemDir string
-	Total        int
-	Types        map[string]int
-	Global       int // memories in the global store
-	LastDream    time.Time
-	SinceDream   int // sessions since the last dream
-	Cursors      map[string]*Cursor
+	Project    Meta // Name "" if the folder has none
+	MemDir     string
+	Total      int
+	Types      map[string]int
+	Global     int // memories in the global store
+	Projects   int // other projects
+	Elsewhere  int // their memories
+	LastDream  time.Time
+	SinceDream int // sessions since the last dream
+	Cursors    map[string]*Cursor
 }
 
 func (c Client) Status() (Status, error) {
-	s := Status{Root: c.Root, MemDir: c.MemDir(), Types: map[string]int{}}
-	mems, err := c.Load()
-	if err != nil {
+	p := c.Context()
+	s := Status{Project: p.Meta(), Types: map[string]int{}}
+	if p.Name != "" {
+		s.MemDir = p.MemDir()
+	}
+	mems, err := p.Load()
+	if err != nil && p.Name != "" {
 		return s, err
 	}
-	st, err := c.LoadState()
+	st, err := p.LoadState()
 	if err != nil {
 		return s, err
 	}
 	for _, m := range mems {
 		s.Types[m.Type]++
 	}
-	s.Total, s.LastDream, s.SinceDream, s.Cursors = len(mems), st.LastDream, len(st.Sessions), st.Cursors
-	if glob, err := c.Global().Load(); err == nil && !c.IsGlobal() {
+	s.Total, s.LastDream, s.SinceDream = len(mems), st.LastDream, len(st.Sessions)
+	if !p.IsGlobal() {
+		glob, _ := Store(c.Home, GlobalName).Load()
 		s.Global = len(glob)
+	}
+	ps, _ := Projects(c.Home)
+	for _, o := range ps {
+		if o.Name != p.Name {
+			mems, _ := o.Load()
+			s.Projects++
+			s.Elsewhere += len(mems)
+		}
+	}
+	if s.Cursors, err = Cursors(c.Home); err != nil {
+		return s, err
 	}
 	return s, nil
 }
 
-func (c Client) log(op string, files []string, query, note string, start time.Time, err error) {
-	c.Log(Event{Kind: "call", Agent: c.Caller, Name: op, Files: files, Prompt: query, Note: note, Ms: time.Since(start).Milliseconds(), Err: errString(err)})
+// Projects lists global and every project.
+func (c Client) Projects() ([]ProjectInfo, error) {
+	p := c.Context()
+	c.log(p, "projects", nil, "", "", time.Now(), nil)
+	return p.ProjectList()
+}
+
+// SetProject creates or describes a project and links or unlinks folders.
+// link "." means the session's folder (its repository root).
+func (c Client) SetProject(name, description, link, unlink string) (string, error) {
+	start := time.Now()
+	ctx := c.Context()
+	s := Store(c.Home, name)
+	msg, err := func() (string, error) {
+		if s.Name == "" || s.IsGlobal() {
+			return "", fmt.Errorf("%q can't be a project name", name)
+		}
+		existed := s.Exists()
+		if err := s.UpdateMeta(func(m *Meta) {
+			if d := oneLine(description); d != "" {
+				m.Description = d
+			}
+		}); err != nil {
+			return "", err
+		}
+		var notes []string
+		if !existed {
+			notes = append(notes, "Created project "+s.Name+".")
+		} else if description != "" {
+			notes = append(notes, "Described "+s.Name+".")
+		}
+		if link == "." {
+			link = gitRoot(c.Cwd)
+		}
+		if link != "" {
+			if err := s.Link(link); err != nil {
+				return "", err
+			}
+			notes = append(notes, "Linked "+link+".")
+		}
+		if unlink != "" {
+			if err := s.Unlink(unlink); err != nil {
+				return "", err
+			}
+			notes = append(notes, "Unlinked "+unlink+".")
+		}
+		if len(notes) == 0 {
+			notes = append(notes, "Unchanged.")
+		}
+		return strings.Join(notes, " "), nil
+	}()
+	c.log(ctx, "project", nil, "", s.Name, start, err)
+	return msg, err
+}
+
+func (c Client) log(p Project, op string, files []string, query, note string, start time.Time, err error) {
+	p.Log(Event{Kind: "call", Agent: c.Caller, Name: op, Files: files, Prompt: query, Note: note, Ms: time.Since(start).Milliseconds(), Err: errString(err)})
 }
 
 // The text both interfaces show.
 
 func FormatMemory(m Memory) string {
-	bare := m
-	bare.Name = strings.TrimPrefix(m.Name, GlobalPrefix)
-	return fmt.Sprintf("Memory: %s (modified %s):\n\n%s", m.File(), m.Modified.UTC().Format("2006-01-02"), bare.Render())
+	return fmt.Sprintf("Memory: %s (modified %s):\n\n%s", m.File(), m.Modified.UTC().Format("2006-01-02"), bare(m).Render())
 }
 
 func FormatSearch(hits []Memory, total int) string {
@@ -166,9 +257,26 @@ func FormatSearch(hits []Memory, total int) string {
 
 func FormatStatus(s Status) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "project  %s\nmemory   %s\n", s.Root, s.MemDir)
-	fmt.Fprintf(&b, "files    %d (user %d, directive %d, project %d, reference %d)\n", s.Total, s.Types["user"], s.Types["directive"], s.Types["project"], s.Types["reference"])
-	fmt.Fprintf(&b, "global   %d, shared by every project\n", s.Global)
+	if s.Project.Name == "" {
+		b.WriteString("project  none for this folder (spin project NAME --link . to link one)\n")
+	} else {
+		fmt.Fprintf(&b, "project  %s", s.Project.Name)
+		if s.Project.Description != "" {
+			b.WriteString(": " + s.Project.Description)
+		}
+		fmt.Fprintf(&b, "\nmemory   %s\n", s.MemDir)
+		for _, f := range s.Project.Folders {
+			fmt.Fprintf(&b, "folder   %s\n", f)
+		}
+		fmt.Fprintf(&b, "files    %d (user %d, directive %d, project %d, reference %d)\n", s.Total, s.Types["user"], s.Types["directive"], s.Types["project"], s.Types["reference"])
+	}
+	if s.Project.Name != GlobalName {
+		fmt.Fprintf(&b, "global   %d, shared by every project\n", s.Global)
+	}
+	fmt.Fprintf(&b, "others   %d in %d other projects (spin projects)\n", s.Elsewhere, s.Projects)
+	if s.Project.Name == "" {
+		return b.String()
+	}
 	last := "never"
 	if !s.LastDream.IsZero() {
 		last = s.LastDream.Local().Format("2006-01-02 15:04")
@@ -178,7 +286,11 @@ func FormatStatus(s Status) string {
 	for path := range s.Cursors {
 		paths = append(paths, path)
 	}
-	sort.Strings(paths)
+	sort.Slice(paths, func(i, j int) bool { return s.Cursors[paths[i]].At.After(s.Cursors[paths[j]].At) })
+	if len(paths) > 5 {
+		fmt.Fprintf(&b, "cursors  %d transcripts read; the latest:\n", len(paths))
+		paths = paths[:5]
+	}
 	for _, path := range paths {
 		c := s.Cursors[path]
 		fmt.Fprintf(&b, "cursor   %s line %d, %s (%s)\n", c.Agent, c.Line, c.At.Local().Format("2006-01-02 15:04"), path)
@@ -189,31 +301,36 @@ func FormatStatus(s Status) string {
 // Dream runs the consolidation pass now. Unless force is set it waits for the
 // gate (24 h and 5 sessions since the last dream).
 func (c Client) Dream(ctx context.Context, m model.Model, force bool) (DreamResult, error) {
-	st, err := c.LoadState()
+	p := c.Context()
+	if p.Name == "" {
+		return DreamResult{}, errNoProject
+	}
+	st, err := p.LoadState()
 	if err != nil {
 		return DreamResult{}, err
 	}
 	if !force && !DreamDue(st, time.Now()) {
 		return DreamResult{}, fmt.Errorf("not due: %d of %d sessions since the last dream; --force to run anyway", len(st.Sessions), DreamSessions)
 	}
-	return Dream(ctx, c.Project, m, time.Now())
+	return Dream(ctx, p, m, time.Now())
 }
 
 // Extract runs one extraction pass over a transcript now.
 func (c Client) Extract(ctx context.Context, transcript string, m model.Model) (ExtractResult, error) {
-	return Extract(ctx, c.Project, transcript, m, time.Now())
+	return Extract(ctx, c.Context(), transcript, m, time.Now())
 }
 
 // LogFilter narrows the activity log.
 type LogFilter struct {
 	Session string // prefix
 	Kind    string
+	Project string
 	Last    int // 0: all
 }
 
 // Activity returns the activity log, oldest first, filtered.
 func (c Client) Activity(f LogFilter) ([]Event, error) {
-	evs, err := c.Events()
+	evs, err := c.Context().Events()
 	if err != nil {
 		return nil, err
 	}
@@ -230,13 +347,14 @@ func (c Client) Activity(f LogFilter) ([]Event, error) {
 }
 
 func (f LogFilter) Match(e Event) bool {
-	return strings.HasPrefix(e.Session, f.Session) && (f.Kind == "" || e.Kind == f.Kind)
+	return strings.HasPrefix(e.Session, f.Session) && (f.Kind == "" || e.Kind == f.Kind) && (f.Project == "" || e.Project == f.Project)
 }
 
 // History returns one memory's changes, newest first. Old versions are for
 // people auditing memory; they are never put into context on their own.
 func (c Client) History(name string) ([]Change, error) {
-	store, name := c.ref(name)
+	p := c.Context()
+	store, name := p.locate(name)
 	start := time.Now()
 	all, err := store.Changes()
 	var out []Change
@@ -245,7 +363,7 @@ func (c Client) History(name string) ([]Change, error) {
 			out = append(out, all[i])
 		}
 	}
-	c.log("history", []string{RefOf(store, name) + ".md"}, "", fmt.Sprintf("%d changes", len(out)), start, err)
+	c.log(p, "history", []string{RefOf(store, name) + ".md"}, "", fmt.Sprintf("%d changes", len(out)), start, err)
 	return out, err
 }
 
@@ -267,7 +385,7 @@ func (c Client) Restore(name string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	store, _ := c.ref(name)
+	store, _ := c.Context().locate(name)
 	return c.apply(Op{Op: "write", Name: RefOf(store, old.Name), Type: old.Type, Description: old.Description, Body: old.Body,
 		Reason: fmt.Sprintf("restored the version before the %s of %s", ch.Op, ch.At.UTC().Format(time.RFC3339))})
 }
@@ -286,7 +404,7 @@ func FormatEvents(evs []Event) string {
 // FormatHistory lists changes; with full set it includes each old version.
 func FormatHistory(name string, hist []Change, full bool) string {
 	if len(hist) == 0 {
-		return fmt.Sprintf("No changes recorded for %s.\n", NameOf(name))
+		return fmt.Sprintf("No changes recorded for %s.\n", strings.TrimSpace(name))
 	}
 	var b strings.Builder
 	for i, ch := range hist {

@@ -36,10 +36,11 @@ type DreamResult struct {
 	Summary string
 }
 
-// ErrDreaming means another dream is running for the project.
+// ErrDreaming means another dream is running for the store.
 var ErrDreaming = errors.New("a dream is already running for this project")
 
-// Dream runs one pass and resets the gate. One dream runs at a time.
+// Dream runs one pass over one store and resets its gate. One dream runs at
+// a time per store.
 func Dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
 	if err := p.Init(); err != nil {
 		return DreamResult{}, err
@@ -81,8 +82,15 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 	}
 	b.WriteString("## Instruction files\n\n")
 	found := false
+	var folder string
+	if fs := p.Meta().Folders; len(fs) > 0 {
+		folder = fs[0]
+	}
 	for _, name := range []string{"CLAUDE.md", "AGENTS.md", filepath.Join(".claude", "CLAUDE.md")} {
-		if text, err := os.ReadFile(filepath.Join(p.Root, name)); err == nil {
+		if folder == "" {
+			break
+		}
+		if text, err := os.ReadFile(filepath.Join(folder, name)); err == nil {
 			found = true
 			fmt.Fprintf(&b, "<file name=%q>\n%s\n</file>\n\n", name, clipRunes(string(text), 20_000))
 		}
@@ -104,6 +112,9 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 		return res, err
 	}
 	defer unlock()
+	for i := range out.Ops {
+		_, out.Ops[i].Name = splitRef(out.Ops[i].Name) // the dream sees one store; names are bare
+	}
 	if res.Result, err = p.Apply(out.Ops, "dream", "", now); err != nil {
 		return res, err
 	}

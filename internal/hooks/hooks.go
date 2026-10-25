@@ -1,9 +1,8 @@
-// Package hooks connects Claude Code and Codex hook events to project
-// memory. Both tools send the same JSON on stdin (session_id,
+// Package hooks connects Claude Code and Codex hook events to memory. Both tools send the same JSON on stdin (session_id,
 // transcript_path, cwd, hook_event_name and per-event fields) and read the
 // same hookSpecificOutput.additionalContext back, so one handler serves both.
 //
-//	SessionStart      instructions and the MEMORY.md index; after compaction, recall may repeat
+//	SessionStart      instructions and the indexes (this folder's project, global, the rest); after compaction, recall may repeat
 //	UserPromptSubmit  start the selector; wait a few seconds and attach its picks if they are ready
 //	PostToolUse       attach the picks if they arrived after the prompt went in
 //	Stop              drop picks that never arrived; queue extraction (async)
@@ -80,7 +79,7 @@ func (h Handler) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // Handle runs one event and returns the context to add, if any.
 func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
-	p, err := memory.Resolve(h.Home, ev.Cwd)
+	p, err := memory.Hint(h.Home, ev.Cwd)
 	if err != nil {
 		return "", err
 	}
@@ -97,17 +96,17 @@ func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
 		p.Log(memory.Event{Kind: "start", Agent: agent, Session: ev.SessionID, Note: fmt.Sprintf("%s; index and instructions, %d bytes", orDefault(ev.Source, "startup"), len(text))})
 		return text, nil
 	case "UserPromptSubmit":
-		id, err := p.StartRecall(ev.SessionID, agent, ev.Prompt, time.Now())
+		id, err := p.StartRecall(ev.SessionID, agent, ev.Prompt, ev.TranscriptPath, time.Now())
 		if err != nil || id == "" {
 			return "", err
 		}
 		if h.LocalRecall {
-			if err := p.RunSelect(ctx, ev.SessionID, id, nil, true); err != nil {
+			if err := memory.RunSelect(ctx, h.Home, ev.SessionID, id, nil, true); err != nil {
 				return "", err
 			}
 			return p.WaitRecall(ev.SessionID, id, 0)
 		}
-		if err := h.spawn("select", "--root", p.Root, "--session", ev.SessionID, "--id", id, "--agent", agent); err != nil {
+		if err := h.spawn("select", "--session", ev.SessionID, "--id", id, "--agent", agent); err != nil {
 			return "", err
 		}
 		return p.WaitRecall(ev.SessionID, id, h.RecallWait)
@@ -120,7 +119,7 @@ func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
 		if ev.TranscriptPath == "" {
 			return "", nil
 		}
-		j := memory.Job{Agent: agent, Session: ev.SessionID, Transcript: ev.TranscriptPath, Root: p.Root}
+		j := memory.Job{Agent: agent, Session: ev.SessionID, Transcript: ev.TranscriptPath, Cwd: p.Cwd, Project: p.Name}
 		if err := memory.Enqueue(h.Home, j); err != nil {
 			return "", err
 		}
