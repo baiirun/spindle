@@ -10,6 +10,8 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
 1. **One subject per file.** Each file has frontmatter `name`, `description` and `metadata.type`, then the body.
    The name is kebab-case and doubles as the file name.
 2. **Four types:** `user`, `directive`, `project` and `reference`.
+   A file with a missing or other type (say, `feedback` copied from Claude Code) is still a memory: the index
+   lists it under Other with its type, and `spin log` shows a warning until it is fixed.
 3. **The files are the source of truth.** Code rebuilds `MEMORY.md` from them after every change. Logs and state
    can be rebuilt or thrown away, and no memory is lost.
 4. **Files hold the current truth.** A changed fact rewrites its file, and a wrong memory is deleted. Every write

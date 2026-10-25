@@ -13,7 +13,7 @@ import (
 // nothing reads it back into context.
 type Event struct {
 	At      time.Time `json:"at"`
-	Kind    string    `json:"kind"` // start, select, recall, skip, call, extract, dream
+	Kind    string    `json:"kind"` // start, select, recall, skip, call, extract, dream, warn
 	Agent   string    `json:"agent,omitempty"`
 	Session string    `json:"session,omitempty"`
 	Project string    `json:"project,omitempty"` // the session's project

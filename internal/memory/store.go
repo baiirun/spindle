@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -327,7 +328,26 @@ func (p Project) RebuildIndex() error {
 	if err != nil {
 		return err
 	}
+	if odd := untyped(mems); len(odd) > 0 {
+		var files []string
+		for _, m := range odd {
+			files = append(files, m.File())
+		}
+		p.Log(Event{Kind: "warn", Name: "index", Files: files, Note: "type is missing or not one of " + strings.Join(Types, ", ") + "; listed under Other"})
+	}
 	return writeFile(p.IndexPath(), []byte(Index(mems)))
+}
+
+// untyped returns the memories whose type spindle doesn't know, such as a
+// file copied from Claude Code with type "feedback", or one with no type.
+func untyped(mems []Memory) []Memory {
+	var out []Memory
+	for _, m := range mems {
+		if !slices.Contains(Types, m.Type) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 var typeTitles = map[string]string{"user": "User", "directive": "Directives", "project": "Project", "reference": "References"}
@@ -337,17 +357,27 @@ var typeTitles = map[string]string{"user": "User", "directive": "Directives", "p
 func Index(mems []Memory) string {
 	var b strings.Builder
 	lines, dropped := 0, 0
-	for _, t := range Types {
+	// Memories of an unknown type come last, under Other, so they stay
+	// visible while recall and search still see them.
+	for _, t := range slices.Concat(Types, []string{""}) {
 		var group []Memory
-		for _, m := range mems {
-			if m.Type == t {
-				group = append(group, m)
+		if t == "" {
+			group = untyped(mems)
+		} else {
+			for _, m := range mems {
+				if m.Type == t {
+					group = append(group, m)
+				}
 			}
 		}
 		if len(group) == 0 {
 			continue
 		}
-		head := fmt.Sprintf("## %s\n", typeTitles[t])
+		title := typeTitles[t]
+		if t == "" {
+			title = "Other"
+		}
+		head := fmt.Sprintf("## %s\n", title)
 		if lines > 0 {
 			head = "\n" + head
 		}
@@ -358,7 +388,11 @@ func Index(mems []Memory) string {
 		b.WriteString(head)
 		lines += 2
 		for _, m := range group {
-			line := fmt.Sprintf("- [%s](%s) — %s\n", m.Name, m.File(), clipRunes(oneLine(m.Description), 140))
+			hook := clipRunes(oneLine(m.Description), 140)
+			if t == "" {
+				hook += fmt.Sprintf(" (type %q)", m.Type)
+			}
+			line := fmt.Sprintf("- [%s](%s) — %s\n", m.Name, m.File(), hook)
 			if lines+1 > IndexLines-1 || b.Len()+len(line) > IndexBytes-200 {
 				dropped++
 				continue

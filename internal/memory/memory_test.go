@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -154,6 +155,39 @@ func fake(t *testing.T, calls *[]string, answer func(system, prompt string) stri
 		*calls = append(*calls, prompt)
 		return answer(system, prompt), nil
 	})
+}
+
+func TestIndexListsUnknownTypesUnderOther(t *testing.T) {
+	p := project(t)
+	write(t, p, Op{Op: "write", Name: "role", Type: "user", Description: "Solo dev", Body: "Go."})
+	for name, typ := range map[string]string{"old-rule": "  type: feedback\n", "bare": ""} {
+		text := "---\nname: " + name + "\ndescription: Hand-made\nmetadata:\n" + typ + "---\n\nBody.\n"
+		if err := os.WriteFile(filepath.Join(p.MemDir(), name+".md"), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.RebuildIndex(); err != nil {
+		t.Fatal(err)
+	}
+	idx := p.ReadIndex()
+	for _, want := range []string{"## User\n", "## Other\n", `- [old-rule](old-rule.md) — Hand-made (type "feedback")`, `- [bare](bare.md) — Hand-made (type "")`} {
+		if !strings.Contains(idx, want) {
+			t.Errorf("index lacks %q:\n%s", want, idx)
+		}
+	}
+	if strings.Index(idx, "## Other") < strings.Index(idx, "## User") {
+		t.Errorf("Other should come after the known types:\n%s", idx)
+	}
+	evs, _ := p.Events()
+	var warned bool
+	for _, e := range evs {
+		if e.Kind == "warn" && slices.Contains(e.Files, "old-rule.md") && slices.Contains(e.Files, "bare.md") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no warn event naming both files: %+v", evs)
+	}
 }
 
 func TestExtract(t *testing.T) {
