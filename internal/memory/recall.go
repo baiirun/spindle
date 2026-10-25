@@ -422,7 +422,7 @@ func recalled(m Memory, now time.Time) string {
 	}
 	body := bare(m).Render()
 	if len(body) > FileBytes {
-		body = clipRunes(body, FileBytes) + "\n(cut; memory_read for the rest)"
+		body = clipBytes(body, FileBytes) + "\n(cut; memory_read for the rest)"
 	}
 	fmt.Fprintf(&b, "Memory: %s:\n\n%s", m.File(), body)
 	return b.String()
