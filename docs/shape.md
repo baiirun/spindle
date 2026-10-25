@@ -87,3 +87,4 @@ should know across sessions, tools and projects, on one machine. Neighbouring jo
 - [ ] Prompts copied from elsewhere are still as copied, and any change is noted in `prompts.go`.
 - [ ] `go vet ./...` and `go test ./...` pass.
 - [ ] architecture.md, usage.md and this doc match the code.
+- [ ] CHANGELOG.md has a line under Unreleased for any change a user would notice. CI checks this unless the PR has the `no changelog` label.
