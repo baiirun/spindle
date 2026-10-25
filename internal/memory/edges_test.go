@@ -69,8 +69,16 @@ func TestRestoreDeletedMemoryInAnotherStore(t *testing.T) {
 	if _, err := c.Restore("role", 1); err != nil {
 		t.Errorf("restore by bare name: %v", err)
 	}
-	if hist, _ := c.History("global/role"); len(hist) != 2 {
-		t.Fatalf("history by full name: %d changes, want 2", len(hist))
+	// Create, delete, restore: the restore went back to global, not the
+	// session's project.
+	if hist, _ := c.History("global/role"); len(hist) != 3 {
+		t.Fatalf("history by full name: %d changes, want 3", len(hist))
+	}
+	if m, err := c.Read("global/role"); err != nil || m.Body != "Go." {
+		t.Errorf("restored memory: %+v %v", m, err)
+	}
+	if _, ok := p.Get("role"); ok {
+		t.Error("restore wrote role into the session's project")
 	}
 }
 
