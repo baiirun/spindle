@@ -71,12 +71,21 @@ index is rebuilt.
 `SessionStart` (startup, resume, clear, compact) returns:
 
 1. the memory instructions (`Instructions` in `prompts.go`): the types, where memories go, and when to read and write;
-2. the session's project's index, with refs, or a note that the folder has no project;
-3. the global index;
-4. one line per other project: name, memory count, description.
+2. the global index;
+3. the session's project's index, with refs, or a note that the folder has no project;
+4. one line per other project: name, memory count, description, most recently changed first.
 
-The whole thing is cut at 9,500 characters. On `clear` and `compact` the session's recall state is reset, so
-those memories can be recalled again.
+The whole thing fits in 9,500 characters. What the instructions leave is shared between the sections: 20% for
+global, 65% for the session's project and 15% for the other projects. A section that needs less than its share
+passes the rest on, first to the sections after it and then to any that still has lines to show. Each section is
+cut on its own, so a long project index never pushes global out. A cut index keeps its directives, then its most
+recently changed memories, and ends with a line such as `+34 more in spindle, use memory_search`. Everything cut is
+still found by recall and search. `memory_index` and `spin index` show every section uncut.
+
+The global dream is told global's share and how much of it global uses, so it keeps global small enough to load
+whole.
+
+On `clear` and `compact` the session's recall state is reset, so those memories can be recalled again.
 
 ## Recall
 

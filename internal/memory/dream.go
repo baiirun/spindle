@@ -98,6 +98,9 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 	if !found {
 		b.WriteString("(none)\n\n")
 	}
+	if p.IsGlobal() {
+		b.WriteString(globalSize(p))
+	}
 	fmt.Fprintf(&b, "## Messages from the %d sessions since the last dream\n\n%s", len(state.Sessions), recentSignal(state, dreamSignal))
 
 	var out struct {
@@ -127,6 +130,21 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 		return res, err
 	}
 	return res, appendJSONL(filepath.Join(p.Dir, "dreams.jsonl"), []map[string]any{{"at": now.UTC(), "summary": out.Summary, "written": res.Written, "deleted": res.Deleted}})
+}
+
+// globalSize tells the global dream how much room global's index has at
+// session start, so that it keeps global small enough to load whole.
+func globalSize(g Project) string {
+	room := GlobalRoom()
+	sec := indexSection(g, "", GlobalShare)
+	n := sec.cost(sec.items)
+	text := fmt.Sprintf("## Size\n\nThe global index is loaded at the start of every session in every project, in about %d characters. It is now %d characters.", room, n)
+	if n > room {
+		text += " That is over: merge overlapping memories and shorten descriptions until it fits. Lines past the limit are left out of session start, newest directives kept first."
+	} else {
+		text += " Keep it within that."
+	}
+	return text + "\n\n"
 }
 
 // recentSignal renders the messages since the last dream, newest sessions
