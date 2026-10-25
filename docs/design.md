@@ -63,12 +63,13 @@ or `codex exec` (read-only, ephemeral). The CLI is chosen by the agent whose hoo
 
 | Role | Claude default | Codex default | Override |
 |---|---|---|---|
-| select | haiku | gpt-6-luna, low effort | `SPINDLE_MODEL_SELECT` |
+| select | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_SELECT` |
 | extract | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_EXTRACT` |
 | dream | opus | gpt-6-luna, medium effort | `SPINDLE_MODEL_DREAM` |
 
-Claude Code selects with Sonnet. Here the prompt hook waits on the selector, and through the CLI Haiku answered in
-about 3 s where Sonnet took about 6 s.
+As in Claude Code, Sonnet selects. Through the CLI, Sonnet 5.5 and Haiku 5.5 take about the same time to start
+(3.0 s and 2.6 s for a one-word reply), so Haiku buys little here. The selector's full run, with the file list, took
+about 6 s in one test, which is past the 4 s wait, so those picks arrive after the next tool call.
 
 Every process spindle starts carries `SPINDLE_INNER=1`. Hooks that see it do nothing, so a side call can't fire
 spindle again.

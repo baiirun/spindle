@@ -35,12 +35,12 @@ const (
 const BackendEnv = "SPINDLE_BACKEND"
 
 // Defaults per backend. Claude Code's own memory uses Sonnet to select and
-// the main model to extract. Here selection uses Haiku: the prompt hook waits
-// for it, and Sonnet through the CLI takes about 6 s against Haiku's 3 s.
+// the main model to extract; so does this. Through the CLI, Sonnet 5.5 starts
+// about as fast as Haiku 5.5 (3.0 s against 2.6 s for a one-word reply).
 // Codex's memory uses its small model at low effort to extract and more
 // effort to consolidate.
 var defaults = map[string]map[Role]string{
-	"claude": {Select: "haiku", Extract: "sonnet", Dream: "opus"},
+	"claude": {Select: "sonnet", Extract: "sonnet", Dream: "opus"},
 	"codex":  {Select: "gpt-6-luna", Extract: "gpt-6-luna", Dream: "gpt-6-luna"},
 }
 
