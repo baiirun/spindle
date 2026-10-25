@@ -38,8 +38,8 @@ const usage = `usage: spin <command> [flags]
   index     print what a session here starts with: this project's index, global, the rest
   history   one memory's changes, who made them and the text before (--restore N puts one back)
   log       show memory activity across projects: recalls, saves, tool calls (-f to follow)
-  install   print the hook and MCP config for claude or codex
-  dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
+  install   print the hook and MCP config for claude or codex, or the dream schedule (launchd)
+  dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate; --due runs every due project)
   extract   run extraction on one transcript now
   worker    drain the extraction queue (hooks start it)
   select    run the recall selector for a pending message (hooks start it)
@@ -87,7 +87,7 @@ func run(home, cmd string, args []string) error {
 	case "log":
 		return runLog(home, args)
 	case "install":
-		return runInstall(args)
+		return runInstall(home, args)
 	case "dream":
 		return runDream(home, args)
 	case "extract":
@@ -168,7 +168,7 @@ func runMCP(home string, args []string) error {
 		if p.Name == "" {
 			return fmt.Errorf("this folder isn't linked to a project; link one with memory_project first")
 		}
-		return spawn(home)("dream", "--project", p.Name, "--force", "--agent", orClaude(*agent))
+		return spawn(home)("dream", "--project", p.Name, "--force")
 	})}.Serve(ctx, os.Stdin, os.Stdout)
 }
 
@@ -362,11 +362,11 @@ func runIndex(home string, args []string) error {
 	return nil
 }
 
-func runInstall(args []string) error {
+func runInstall(home string, args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	bin := fs.String("bin", "", "path to spin (default: this binary)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: spin install [--bin PATH] claude|codex\n\nPrints the config to merge by hand; nothing is written.")
+		fmt.Fprintln(fs.Output(), "usage: spin install [--bin PATH] claude|codex|launchd\n\nPrints the config to merge by hand; nothing is written.")
 	}
 	fs.Parse(args)
 	if fs.NArg() != 1 {
@@ -381,6 +381,10 @@ func runInstall(args []string) error {
 		}
 		path = exe
 	}
+	if fs.Arg(0) == "launchd" {
+		fmt.Print(hooks.LaunchdConfig(path, home))
+		return nil
+	}
 	out, err := hooks.InstallConfig(fs.Arg(0), path)
 	if err != nil {
 		return err
@@ -393,14 +397,24 @@ func runDream(home string, args []string) error {
 	fs := flag.NewFlagSet("dream", flag.ExitOnError)
 	dir := projectFlag(fs)
 	force := fs.Bool("force", false, "run even if the gate is closed")
-	agent := fs.String("agent", "claude", "which CLI runs the model: claude or codex")
+	due := fs.Bool("due", false, "dream every project whose gate is open (what the schedule runs)")
+	fs.String("agent", "", "ignored: dreams use Codex, then Claude if Codex fails (SPINDLE_BACKEND pins one)")
 	fs.Parse(args)
+	os.Setenv(memory.InnerEnv, "1")
+	m := model.For("", model.Dream)
+	if *due {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if n := memory.DreamDueStores(ctx, home, m, time.Now(), os.Stdout); n == 0 {
+			fmt.Println("nothing due")
+		}
+		return nil
+	}
 	c, err := client(home, *dir)
 	if err != nil {
 		return err
 	}
-	os.Setenv(memory.InnerEnv, "1")
-	res, err := c.Dream(context.Background(), model.For(*agent, model.Dream), *force)
+	res, err := c.Dream(context.Background(), m, *force)
 	if err != nil {
 		return err
 	}
@@ -550,11 +564,4 @@ func runHistory(home string, args []string) error {
 	}
 	fmt.Print(memory.FormatHistory(fs.Arg(0), hist, *full))
 	return nil
-}
-
-func orClaude(agent string) string {
-	if agent == "codex" {
-		return agent
-	}
-	return "claude"
 }

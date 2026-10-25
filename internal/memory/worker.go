@@ -134,20 +134,33 @@ func drain(ctx context.Context, home string, o WorkerOptions) error {
 	if o.NoDream || agent == "" {
 		return nil
 	}
+	DreamDueStores(ctx, home, o.Models(agent, model.Dream), o.Now(), o.Log)
+	return nil
+}
+
+// DreamDueStores dreams every store whose gate is open. The scheduled run
+// (spin dream --due) and the worker after each drain both call it; the gate
+// and the dream lock keep them from doubling up. It returns how many ran.
+func DreamDueStores(ctx context.Context, home string, m model.Model, now time.Time, log io.Writer) int {
+	n := 0
 	all, _ := stores(home)
 	for _, s := range all {
+		if ctx.Err() != nil {
+			break
+		}
 		state, err := s.LoadState()
-		if err != nil || !DreamDue(state, o.Now()) {
+		if err != nil || !DreamDue(state, now) {
 			continue
 		}
-		res, err := Dream(ctx, s, o.Models(agent, model.Dream), o.Now())
+		n++
+		res, err := Dream(ctx, s, m, now)
 		if err != nil {
-			fmt.Fprintf(o.Log, "%s dream %s: %v\n", stamp(o.Now()), s.Name, err)
+			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), s.Name, err)
 			continue
 		}
-		fmt.Fprintf(o.Log, "%s dream %s: %d written, %d deleted. %s\n", stamp(o.Now()), s.Name, res.Written, res.Deleted, res.Summary)
+		fmt.Fprintf(log, "%s dream %s: %d written, %d deleted. %s\n", stamp(now), s.Name, res.Written, res.Deleted, res.Summary)
 	}
-	return nil
+	return n
 }
 
 // jobContext is the session context a job was queued in.

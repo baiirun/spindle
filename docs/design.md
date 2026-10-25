@@ -112,22 +112,26 @@ everything first, then write", so here that's two model calls:
 ## Dreaming
 
 Dreaming is Claude Code's auto_dream gate and phases (orient, gather, consolidate, prune, reconcile against
-CLAUDE.md). It runs at most once per 24 hours, after 5 sessions have touched the project. The worker checks the gate
-after each drain, since neither tool has a scheduled hook. Without tools, the model is given every memory file, the
+CLAUDE.md). It runs at most once per 24 hours per store, after 5 sessions have touched it. Neither tool has a
+scheduled hook, so `spin install launchd` prints a launchd agent that runs `spin dream --due` every hour; each store's
+gate decides whether anything happens. The worker also checks the gates after each drain, so dreams still happen
+without the schedule. A dream lock per store keeps the two from running the same dream twice. Without tools, the model is given every memory file, the
 project's CLAUDE.md and AGENTS.md, and the messages from the sessions since the last dream. It returns writes,
 deletes and a summary, and the summary goes to `dreams.jsonl`. `spin dream --force` runs it by hand.
 
 ## Models
 
 Side calls go through the CLI the user already has signed in: `claude -p` (no tools, no settings, no saved session)
-or `codex exec` (read-only, ephemeral). The CLI is chosen by the agent whose hook started the work, or by
-`SPINDLE_BACKEND`.
+or `codex exec` (read-only, ephemeral). Extraction and dreaming run in the background, so they use Codex first and
+fall back to Claude when `codex` is missing, its call fails or it returns something other than JSON (logged to
+`worker.log` or `dream.log`). Selection holds up the user's message, so it uses the CLI of the agent whose hook
+started it. `SPINDLE_BACKEND` pins one CLI for every role; `SPINDLE_MODEL_<ROLE>` names the first model tried.
 
-| Role | Claude default | Codex default | Override |
+| Role | Claude | Codex | Override |
 |---|---|---|---|
-| select | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_SELECT` |
-| extract | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_EXTRACT` |
-| dream | opus | gpt-6-luna, medium effort | `SPINDLE_MODEL_DREAM` |
+| select (the session's agent) | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_SELECT` |
+| extract (Codex, then Claude) | sonnet | gpt-6-luna, low effort | `SPINDLE_MODEL_EXTRACT` |
+| dream (Codex, then Claude) | opus | gpt-6-luna, medium effort | `SPINDLE_MODEL_DREAM` |
 
 As in Claude Code, Sonnet selects. Through the CLI, Sonnet 5.5 and Haiku 5.5 take about the same time to start
 (3.0 s and 2.6 s for a one-word reply), so Haiku buys little here. The selector's full run, with the file list, took
