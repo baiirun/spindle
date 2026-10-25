@@ -13,8 +13,11 @@ import (
 // MemoryTools are the main agent's way into project memory. They replace
 // Claude Code's file tools on its memory folder, so the same instructions work
 // in Codex, whose sandbox may not reach ~/.spindle.
-func MemoryTools(p memory.Project) []Tool {
-	return []Tool{
+//
+// Each call goes to the project's activity log; agent says which tool's
+// session is calling.
+func MemoryTools(p memory.Project, agent string) []Tool {
+	tools := []Tool{
 		{
 			Name:        "memory_read",
 			Description: "Read one memory file in full, by name (as listed in the memory index).",
@@ -99,6 +102,32 @@ func MemoryTools(p memory.Project) []Tool {
 				return "(empty)", nil
 			},
 		},
+	}
+	for i := range tools {
+		tools[i].Call = logged(p, agent, tools[i].Name, tools[i].Call)
+	}
+	return tools
+}
+
+// logged records a tool call: its name or query, what it touched, and errors.
+func logged(p memory.Project, agent, tool string, call func(context.Context, json.RawMessage) (string, error)) func(context.Context, json.RawMessage) (string, error) {
+	return func(ctx context.Context, raw json.RawMessage) (string, error) {
+		start := time.Now()
+		out, err := call(ctx, raw)
+		var a struct{ Name, Query, Reason string }
+		json.Unmarshal(raw, &a)
+		ev := memory.Event{Kind: "mcp", Agent: agent, Name: tool, Ms: time.Since(start).Milliseconds()}
+		if a.Name != "" {
+			ev.Files = []string{memory.NameOf(a.Name) + ".md"}
+		}
+		ev.Prompt, ev.Note = a.Query, a.Reason
+		if err != nil {
+			ev.Err = err.Error()
+		} else if tool == "memory_search" {
+			ev.Note = strings.SplitN(out, "\n", 2)[0]
+		}
+		p.Log(ev)
+		return out, err
 	}
 }
 

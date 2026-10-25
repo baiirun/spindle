@@ -282,6 +282,7 @@ type Change struct {
 // Result counts what Apply did.
 type Result struct {
 	Written, Deleted, Skipped int
+	Changed                   []string // "+name" written, "-name" deleted
 }
 
 // Apply writes and deletes memories, logs each change, and rebuilds the
@@ -325,6 +326,7 @@ func (p Project) Apply(ops []Op, by, session string, now time.Time) (Result, err
 				return res, err
 			}
 			res.Written++
+			res.Changed = append(res.Changed, "+"+name)
 			log = append(log, Change{At: now.UTC(), Op: "write", Name: name, By: by, Session: session, Old: old, New: text})
 		case "delete":
 			if old == "" {
@@ -335,6 +337,7 @@ func (p Project) Apply(ops []Op, by, session string, now time.Time) (Result, err
 				return res, err
 			}
 			res.Deleted++
+			res.Changed = append(res.Changed, "-"+name)
 			log = append(log, Change{At: now.UTC(), Op: "delete", Name: name, By: by, Session: session, Reason: oneLine(o.Reason), Old: old})
 		default:
 			res.Skipped++

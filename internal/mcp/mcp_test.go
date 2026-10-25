@@ -26,7 +26,7 @@ func TestTools(t *testing.T) {
 		`{"jsonrpc":"2.0","id":10,"method":"nope"}`,
 	}, "\n")
 	var out strings.Builder
-	if err := (Server{Name: "spindle", Version: "t", Tools: MemoryTools(p)}).Serve(context.Background(), strings.NewReader(in), &out); err != nil {
+	if err := (Server{Name: "spindle", Version: "t", Tools: MemoryTools(p, "claude")}).Serve(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatal(err)
 	}
 	type resp struct {

@@ -37,6 +37,15 @@ model for word matching in the hook itself.
 The main agent writes memory through the MCP tools, not file tools, so the same instructions work in Codex, whose
 sandbox may not reach `~/.spindle`.
 
+## Activity log
+
+Each project keeps `events.jsonl` next to its memory folder, for people reading along. Nothing reads it back into
+context. It gets one line per session start, recall pick (the prompt, what was picked, how long it took), recall
+delivery (with the prompt or after a tool call), skipped recall or extraction and why, memory tool call (read,
+write, delete, search, index, with the agent that called it), extraction pass and dream. `spin log` prints it as
+readable lines; `-f` follows it, `--session` and `--kind` filter it and `--json` prints the raw lines. Saves and
+deletes also stay in `changes.jsonl` with the old and new text.
+
 ## Extraction
 
 The worker drains the queue (one worker at a time, under an flock) and runs one pass per transcript over the

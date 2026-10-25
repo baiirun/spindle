@@ -33,6 +33,7 @@ const (
 // Selection is one message's pending pick.
 type Selection struct {
 	ID        string    `json:"id"`
+	Agent     string    `json:"agent,omitempty"`
 	Prompt    string    `json:"prompt"`
 	Started   time.Time `json:"started"`
 	Done      bool      `json:"done"`
@@ -81,12 +82,19 @@ func (p Project) withRecall(session string, f func(*RecallState) error) error {
 // StartRecall records a pending selection for a user message and returns
 // its ID, or "" when recall is skipped: a one-word prompt, no memories, or the
 // session's recall budget spent.
-func (p Project) StartRecall(session, prompt string, now time.Time) (string, error) {
+func (p Project) StartRecall(session, agent, prompt string, now time.Time) (string, error) {
+	skipped := func(why string) {
+		p.Log(Event{At: now, Kind: "skip", Agent: agent, Session: session, Name: "recall", Prompt: prompt, Note: why})
+	}
 	if len(strings.Fields(prompt)) < 2 {
+		skipped("one-word prompt")
 		return "", nil
 	}
 	mems, err := p.Load()
 	if err != nil || len(mems) == 0 {
+		if err == nil {
+			skipped("no memories yet")
+		}
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(prompt + now.String()))
@@ -97,9 +105,12 @@ func (p Project) StartRecall(session, prompt string, now time.Time) (string, err
 			skip = true
 			return nil
 		}
-		st.Pending = &Selection{ID: id, Prompt: prompt, Started: now.UTC()}
+		st.Pending = &Selection{ID: id, Agent: agent, Prompt: prompt, Started: now.UTC()}
 		return nil
 	})
+	if skip {
+		skipped("session recall budget spent")
+	}
 	if skip || err != nil {
 		return "", err
 	}
@@ -129,11 +140,14 @@ func (p Project) RunSelect(ctx context.Context, session, id string, m model.Mode
 		return err
 	}
 	var files []string
+	start, how := time.Now(), "model"
 	if local {
-		files = localSelect(mems, sel.Prompt, surfaced)
+		files, how = localSelect(mems, sel.Prompt, surfaced), "word match"
 	} else {
 		files, err = modelSelect(ctx, m, mems, sel.Prompt, surfaced)
 	}
+	p.Log(Event{Kind: "select", Agent: sel.Agent, Session: session, Prompt: sel.Prompt, Files: files, Ms: time.Since(start).Milliseconds(),
+		Note: fmt.Sprintf("%s, %d candidates", how, min(len(mems), SelectCandidates)), Err: errString(err)})
 	return p.withRecall(session, func(st *RecallState) error {
 		if st.Pending == nil || st.Pending.ID != id {
 			return nil
@@ -287,7 +301,7 @@ func (p Project) attach(session, id string) (string, bool, error) {
 			return nil
 		}
 		done, sel.Delivered = true, true
-		var parts []string
+		var parts, shown []string
 		for _, f := range sel.Files {
 			if st.Surfaced[f] {
 				continue
@@ -297,8 +311,17 @@ func (p Project) attach(session, id string) (string, bool, error) {
 				continue
 			}
 			parts = append(parts, recalled(m, time.Now()))
+			shown = append(shown, f)
 			st.Surfaced[f] = true
 		}
+		if len(sel.Files) == 0 {
+			return nil // the select event already says nothing was picked
+		}
+		how := "with the prompt"
+		if id == "" {
+			how = "after a tool call"
+		}
+		p.Log(Event{Kind: "recall", Agent: sel.Agent, Session: session, Files: shown, Note: how})
 		if len(parts) == 0 {
 			return nil
 		}
@@ -329,7 +352,19 @@ func (p Project) DropPending(session string) error {
 	if _, err := os.Stat(p.recallPath(session)); err != nil {
 		return nil
 	}
-	return p.withRecall(session, func(st *RecallState) error { st.Pending = nil; return nil })
+	return p.withRecall(session, func(st *RecallState) error {
+		if sel := st.Pending; sel != nil && !sel.Delivered {
+			note := "turn ended before the picks arrived"
+			if sel.Done && len(sel.Files) == 0 {
+				note = ""
+			}
+			if note != "" {
+				p.Log(Event{Kind: "skip", Agent: sel.Agent, Session: session, Name: "recall", Files: sel.Files, Prompt: sel.Prompt, Note: note})
+			}
+		}
+		st.Pending = nil
+		return nil
+	})
 }
 
 // ResetRecall forgets what the session was shown: after a compaction the

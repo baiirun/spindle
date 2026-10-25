@@ -99,19 +99,26 @@ func Extract(ctx context.Context, p Project, path string, m model.Model, now tim
 		res.Skip = "agent wrote memory"
 	}
 	if res.Skip == "" {
+		start := time.Now()
+		ev := Event{Kind: "extract", Agent: s.Agent, Session: s.ID, Note: fmt.Sprintf("%d new messages", len(fresh))}
 		ops, err := extractOps(ctx, p, m, fresh)
+		if err == nil {
+			var unlock func()
+			if unlock, err = p.Lock(); err == nil {
+				res.Result, err = p.Apply(ops, "extract", s.ID, now)
+				unlock()
+			}
+		}
+		ev.Ms, ev.Files, ev.Err = time.Since(start).Milliseconds(), res.Changed, errString(err)
+		if err == nil && len(res.Changed) == 0 {
+			ev.Note += "; nothing worth saving"
+		}
+		p.Log(ev)
 		if err != nil {
 			return res, err
 		}
-		unlock, err := p.Lock()
-		if err != nil {
-			return res, err
-		}
-		res.Result, err = p.Apply(ops, "extract", s.ID, now)
-		unlock()
-		if err != nil {
-			return res, err
-		}
+	} else if len(fresh) > 0 {
+		p.Log(Event{Kind: "skip", Agent: s.Agent, Session: s.ID, Name: "extract", Note: res.Skip})
 	}
 	if len(fresh) == 0 {
 		return res, nil

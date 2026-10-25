@@ -36,7 +36,7 @@ func InstallConfig(agent, bin string) (string, error) {
 %s
 
 # Memory tools:
-claude mcp add --scope user spindle -- %s mcp
+claude mcp add --scope user spindle -- %s mcp --agent claude
 `, b, quote(bin)), nil
 	}
 	b, _ := json.MarshalIndent(map[string]any{"hooks": hooks}, "", "  ")
@@ -47,7 +47,7 @@ claude mcp add --scope user spindle -- %s mcp
 # Memory tools: add to ~/.codex/config.toml
 [mcp_servers.spindle]
 command = %q
-args = ["mcp"]
+args = ["mcp", "--agent", "codex"]
 `, b, bin), nil
 }
 

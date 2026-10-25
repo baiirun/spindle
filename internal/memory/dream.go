@@ -37,6 +37,13 @@ type DreamResult struct {
 
 // Dream runs one pass and resets the gate.
 func Dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
+	start := time.Now()
+	res, err := dream(ctx, p, m, now)
+	p.Log(Event{Kind: "dream", Files: res.Changed, Ms: time.Since(start).Milliseconds(), Note: res.Summary, Err: errString(err)})
+	return res, err
+}
+
+func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
 	var res DreamResult
 	if err := p.Init(); err != nil {
 		return res, err

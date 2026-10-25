@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +27,7 @@ const usage = `usage: spin <command> [flags]
   hook      handle one Claude Code or Codex hook event (JSON on stdin)
   mcp       serve the project's memory tools over stdio
   status    show a project's memory
+  log       show the project's memory activity: recalls, saves, tool calls (-f to follow)
   install   print the hook and MCP config for claude or codex
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate)
   extract   run extraction on one transcript now
@@ -55,6 +58,8 @@ func run(home, cmd string, args []string) error {
 		return runMCP(home, args)
 	case "status":
 		return runStatus(home, args)
+	case "log":
+		return runLog(home, args)
 	case "install":
 		return runInstall(args)
 	case "dream":
@@ -123,6 +128,7 @@ func projectFlag(fs *flag.FlagSet) *string {
 func runMCP(home string, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	dir := projectFlag(fs)
+	agent := fs.String("agent", "", "claude or codex, for the activity log")
 	fs.Parse(args)
 	p, err := memory.Resolve(home, *dir)
 	if err != nil {
@@ -130,7 +136,7 @@ func runMCP(home string, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p)}.Serve(ctx, os.Stdin, os.Stdout)
+	return mcp.Server{Name: "spindle", Version: "0.1.0", Tools: mcp.MemoryTools(p, *agent)}.Serve(ctx, os.Stdin, os.Stdout)
 }
 
 func runStatus(home string, args []string) error {
@@ -284,4 +290,61 @@ func runSelect(home string, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	return memory.At(home, *root).RunSelect(ctx, *session, *id, model.For(*agent, model.Select), false)
+}
+
+func runLog(home string, args []string) error {
+	fs := flag.NewFlagSet("log", flag.ExitOnError)
+	dir := projectFlag(fs)
+	follow := fs.Bool("f", false, "keep printing new events")
+	n := fs.Int("n", 50, "show the last n events (0: all)")
+	session := fs.String("session", "", "only this session (a prefix is enough)")
+	kind := fs.String("kind", "", "only this kind: start, select, recall, skip, mcp, extract, dream")
+	asJSON := fs.Bool("json", false, "print raw JSON lines")
+	fs.Parse(args)
+	p, err := memory.Resolve(home, *dir)
+	if err != nil {
+		return err
+	}
+	keep := func(e memory.Event) bool {
+		return strings.HasPrefix(e.Session, *session) && (*kind == "" || e.Kind == *kind)
+	}
+	print := func(e memory.Event) {
+		if *asJSON {
+			b, _ := json.Marshal(e)
+			fmt.Println(string(b))
+		} else {
+			fmt.Println(e)
+		}
+	}
+	evs, err := p.Events()
+	if err != nil {
+		return err
+	}
+	var shown []memory.Event
+	for _, e := range evs {
+		if keep(e) {
+			shown = append(shown, e)
+		}
+	}
+	if *n > 0 && len(shown) > *n {
+		shown = shown[len(shown)-*n:]
+	}
+	if len(shown) == 0 && !*follow {
+		fmt.Printf("no activity yet for %s\n", p.Root)
+	}
+	for _, e := range shown {
+		print(e)
+	}
+	for seen := len(evs); *follow; time.Sleep(500 * time.Millisecond) {
+		if evs, err = p.Events(); err != nil {
+			return err
+		}
+		for _, e := range evs[min(seen, len(evs)):] {
+			if keep(e) {
+				print(e)
+			}
+		}
+		seen = len(evs)
+	}
+	return nil
 }

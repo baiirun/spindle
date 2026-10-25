@@ -8,5 +8,6 @@ pass after each turn, recalled per message by a side-model selector, and consoli
     go build -o spin ./cmd/spin
     ./spin install claude   # or codex: prints the hook and MCP config to merge
     ./spin status           # what the current project remembers
+    ./spin log -f           # follow recalls, saves and memory tool calls as they happen
 
 Status: prototype. Unit-tested, and checked once end to end with `claude -p`.

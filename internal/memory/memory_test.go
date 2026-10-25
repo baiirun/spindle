@@ -214,17 +214,17 @@ func TestExtractNothingToSave(t *testing.T) {
 
 func TestRecall(t *testing.T) {
 	p := project(t)
-	if id, _ := p.StartRecall("s", "where are events stored?", t0); id != "" {
+	if id, _ := p.StartRecall("s", "", "where are events stored?", t0); id != "" {
 		t.Fatal("recall started with no memories")
 	}
 	write(t, p,
 		Op{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."},
 		Op{Op: "write", Name: "user-role", Type: "user", Description: "Backend developer", Body: "Go."},
 	)
-	if id, _ := p.StartRecall("s", "thanks", t0); id != "" {
+	if id, _ := p.StartRecall("s", "", "thanks", t0); id != "" {
 		t.Fatal("one-word prompt triggered recall")
 	}
-	id, err := p.StartRecall("s", "where are events stored?", t0)
+	id, err := p.StartRecall("s", "", "where are events stored?", t0)
 	if err != nil || id == "" {
 		t.Fatal(id, err)
 	}
@@ -249,7 +249,7 @@ func TestRecall(t *testing.T) {
 		t.Fatal("attached twice")
 	}
 	// The same file is not shown twice in a session, and the selector is told.
-	id, _ = p.StartRecall("s", "events again please", t0)
+	id, _ = p.StartRecall("s", "", "events again please", t0)
 	m = fake(t, &calls, func(system, prompt string) string {
 		if !strings.Contains(prompt, "Already returned for earlier queries in this conversation: event-log-store.md") {
 			t.Errorf("selector not told what was shown:\n%s", prompt)
@@ -262,13 +262,13 @@ func TestRecall(t *testing.T) {
 	}
 	// After compaction it may be shown again.
 	p.ResetRecall("s")
-	id, _ = p.StartRecall("s", "where are events stored?", t0)
+	id, _ = p.StartRecall("s", "", "where are events stored?", t0)
 	p.RunSelect(context.Background(), "s", id, nil, true)
 	if text, _ := p.WaitRecall("s", id, time.Second); !strings.Contains(text, "event-log-store.md") {
 		t.Fatalf("local select after reset = %q", text)
 	}
 	// A turn that ends first drops the pick.
-	id, _ = p.StartRecall("s2", "where are events stored?", t0)
+	id, _ = p.StartRecall("s2", "", "where are events stored?", t0)
 	p.DropPending("s2")
 	p.RunSelect(context.Background(), "s2", id, nil, true)
 	if text, _ := p.AttachPending("s2"); text != "" {
@@ -285,7 +285,7 @@ func TestRecallAgeNoteAndBudget(t *testing.T) {
 	p := project(t)
 	write(t, p, Op{Op: "write", Name: "a", Type: "project", Description: "d", Body: "b"})
 	p.withRecall("s", func(st *RecallState) error { st.Bytes = SessionBytes; return nil })
-	if id, _ := p.StartRecall("s", "anything at all", t0); id != "" {
+	if id, _ := p.StartRecall("s", "", "anything at all", t0); id != "" {
 		t.Fatal("recall ran past the session budget")
 	}
 }

@@ -93,9 +93,11 @@ func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
 		if ev.Source == "compact" || ev.Source == "clear" {
 			h.logErr(p.ResetRecall(ev.SessionID))
 		}
-		return p.StartContext(), nil
+		text := p.StartContext()
+		p.Log(memory.Event{Kind: "start", Agent: agent, Session: ev.SessionID, Note: fmt.Sprintf("%s; index and instructions, %d bytes", orDefault(ev.Source, "startup"), len(text))})
+		return text, nil
 	case "UserPromptSubmit":
-		id, err := p.StartRecall(ev.SessionID, ev.Prompt, time.Now())
+		id, err := p.StartRecall(ev.SessionID, agent, ev.Prompt, time.Now())
 		if err != nil || id == "" {
 			return "", err
 		}
@@ -125,6 +127,13 @@ func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
 		return "", h.spawn("worker")
 	}
 	return "", nil
+}
+
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }
 
 func (h Handler) spawn(args ...string) error {
