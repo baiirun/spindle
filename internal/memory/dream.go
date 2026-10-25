@@ -119,10 +119,16 @@ func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamR
 		return res, err
 	}
 	res.Summary = out.Summary
+	seen := state.Sessions
 	if state, err = p.LoadState(); err != nil {
 		return res, err
 	}
-	state.LastDream, state.Sessions = now.UTC(), map[string]string{}
+	// Clear only the sessions this dream read; ones marked while it waited on
+	// the model count toward the next dream.
+	for id := range seen {
+		delete(state.Sessions, id)
+	}
+	state.LastDream = now.UTC()
 	if err := p.SaveState(state); err != nil {
 		return res, err
 	}
