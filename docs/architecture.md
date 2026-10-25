@@ -70,13 +70,13 @@ index is rebuilt.
 
 `SessionStart` (startup, resume, clear, compact) returns:
 
-1. the memory instructions (`Instructions` in `prompts.go`, Claude Code's memory section adapted);
+1. the memory instructions (`Instructions` in `prompts.go`): the types, where memories go, and when to read and write;
 2. the session's project's index, with refs, or a note that the folder has no project;
 3. the global index;
 4. one line per other project: name, memory count, description.
 
-The whole thing is cut at 9,500 characters. On `clear` and `compact` the session's recall state is reset, since
-the earlier attachments have left the context.
+The whole thing is cut at 9,500 characters. On `clear` and `compact` the session's recall state is reset, so
+those memories can be recalled again.
 
 ## Recall
 
@@ -93,13 +93,13 @@ On each `UserPromptSubmit`:
    - the session context: the folder, the project and its description, the projects already recalled from, and
      the user's last three messages, read from the transcript.
 
-   The system prompt is Claude Code's recall prompt, word for word. It returns up to 5 files. A pick without its
+   The system prompt asks for only the memories that will clearly help, and is wary of profile and overview memories that merely share words with the message. It returns up to 5 files. A pick without its
    project prefix is accepted when only one store has that file.
 5. If the picks are ready inside the wait, they go in with the prompt. If not, `PostToolUse` attaches them after the
-   next tool call, which is how Claude Code delivers them. `Stop` drops picks that never arrived.
+   next tool call. `Stop` drops picks that never arrived.
 
 An attachment starts with "Retrieved for possible relevance". Each file is cut at 4 KB. A file more than a day old
-carries Claude Code's "This memory is N days old" warning. A file is shown at most once per session.
+carries a "This memory is N days old" warning, so the agent checks it against what it sees now. A file is shown at most once per session.
 `SPINDLE_RECALL=local` swaps the model for word-overlap matching in the hook itself.
 
 ## Extraction
@@ -116,7 +116,7 @@ A pass reads the transcript's messages after its cursor in `cursors.json`. It sk
 - the transcript is a subagent's;
 - the main agent wrote memory itself during those messages (only the agent's own writes count, not the CLI's).
 
-Otherwise it makes two model calls, matching Claude Code's "read first, then write" extractor:
+Otherwise it makes two model calls, so the model reads what it might change before it writes:
 
 1. **Read.** Input: the session section (folder, project, all project names), every store's file list and the new
    messages (each message cut at 6,000 characters, the whole window at 60,000). Output: `nothing_to_save`, or which
@@ -130,8 +130,8 @@ the pass changed.
 
 ## Dreaming
 
-A dream is one pass over one store, after Claude Code's `auto_dream`. Its phases are orient, gather recent signal,
-consolidate, prune, and reconcile against CLAUDE.md. The model is given:
+A dream is one pass over one store. Its phases are orient, gather recent signal, consolidate, prune, and
+reconcile against the instruction files. The model is given:
 
 - every memory file in the store;
 - `CLAUDE.md`, `AGENTS.md` and `.claude/CLAUDE.md` from the project's first linked folder;
@@ -151,7 +151,7 @@ appends the summary to `dreams.jsonl`.
 **Running one by hand:** `spin dream --force`, or `memory_dream`, which starts `spin dream --force` in the
 background.
 
-A non-blocking `dream.lock` per store means a second dream on the same store gives up rather than waits.
+Each store has a non-blocking `dream.lock`, so a second dream on the same store exits at once.
 
 ## Models
 
@@ -185,17 +185,7 @@ isn't. `SPINDLE_BACKEND` pins one CLI for every role, with no fallback.
 | `worker.lock` | the running worker | non-blocking |
 | `cursors.lock` | updates to `cursors.json` | waits |
 | `recall/<session>.json.lock` | updates to one session's recall state | waits |
-| `migrate.lock` | the one-time migration of old repo-keyed stores | waits |
+| `migrate.lock` | upgrading stores written by an earlier version ([CHANGELOG](../CHANGELOG.md)) | waits |
 
 Every lock is an `flock`, so the kernel releases it if a process dies. Files are written to a temporary file and
 then renamed into place.
-
-## Migration
-
-Stores from the earlier repository-keyed layout (`projects/<base>-<hash8>/` with `{"root": ...}` in
-`project.json`) are found the first time anything lists projects. Each one:
-
-- is renamed to `projects/<base>` (or `<base>-2`, and so on, if the name is taken);
-- gets a new `project.json` linking it to its old root;
-- has its cursors merged into `cursors.json` and its activity log merged into `events.jsonl`;
-- loses its old per-session recall state.

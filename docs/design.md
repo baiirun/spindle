@@ -1,133 +1,151 @@
 # spindle design
 
-Spindle gives Claude Code and Codex one long-term memory, shared across all of a user's projects. It is built
-from first principles on what the two tools' own memory systems do, and it runs only through seams both tools
-share: hooks, an MCP server, and files. This doc records the decisions and why they were made.
-[architecture.md](architecture.md) covers how it works, and [shape.md](shape.md) the rules that keep it from
-drifting.
+Spindle is a long-term memory that coding agents share. It remembers who the user is, how they like to work, what
+each project is about, and where things live. Claude Code and Codex use it through their hooks and an MCP server,
+and it is kept as plain files, one memory per file, across all of the user's projects. This doc sets out the
+principles it is built on and the reasons for them. [architecture.md](architecture.md) shows how it works, and
+[shape.md](shape.md) lists the rules that keep it that way.
 
-## Goals
+## What it is for
 
-- **One memory for both tools.** A rule saved in a Codex session is recalled in Claude Code, and the other way round.
-- **Work shouldn't feel siloed.** An agent in one project knows about the others and can use what was learned there.
-- **Durable facts, not transcripts.** Memory holds who the user is, how they want to work, decisions and where
-  things live. It doesn't keep logs of what happened.
-- **A fixed budget.** What goes into context per session and per message is capped, however much memory grows.
-- **Inspectable.** Plain files, an activity log and a change history that a person can read and fix by hand.
+An agent starts each session knowing nothing. Within a few turns the user has told it who they are, which
+approaches they want and which they've ruled out, what the project is aiming for, and where the dashboards live.
+Spindle carries that forward, so the next session, in either tool and in any project, starts from it.
 
-## Decisions
+It aims for four things:
 
-### Follow Claude Code's auto memory
+- **One memory per person.** It serves every agent and every project they work on, so what was learned anywhere
+  is available everywhere.
+- **The right few things in context.** A small index loads at the start of each session, and each message brings
+  in the handful of memories that bear on it. What reaches context stays the same size however large memory grows.
+- **It looks after itself.** Memories are written as work happens and consolidated on a schedule. The user can
+  always ask, but never has to.
+- **People can see and fix all of it.** Every memory is a file they can read and edit, and every recall, write
+  and consolidation shows up in a log.
 
-Spindle uses the same model as Claude Code's auto memory:
+## Principles
 
-- one Markdown file per subject, with `name`, `description` and `type` in the frontmatter;
-- a `MEMORY.md` index that is always loaded;
-- a side-model selector that picks up to 5 files per message from their one-line descriptions, using Claude Code's
-  prompt word for word;
-- an extraction pass after each turn;
-- a daily dream that consolidates.
+### A memory is a small, typed note with a one-line description
 
-**Why:** it's a design shipped and tuned at scale, its behavior is documented, and copying it closely keeps
-spindle predictable to anyone who knows Claude Code. Where spindle departs from it, the reason is written down
-here.
+Each memory is one Markdown file about one subject. A frontmatter header gives its name, a one-line description
+and its type, and the body follows. The description lets a model judge relevance without reading the body, which
+is what makes recall cheap.
 
-### Four types, with "feedback" called "directive"
+There are four types, one for each kind of knowledge an agent needs to carry forward:
 
-`user`, `directive`, `project`, `reference`. **Why:** Claude Code's taxonomy holds up. "Feedback" sounds like a
-one-off reaction, while these memories are standing guidance, and a directive covers confirmed approaches as well
-as corrections.
+| Type | Holds | Example |
+|---|---|---|
+| `user` | who the user is: role, goals, expertise | "Solo developer, writes Go, runs several projects at once" |
+| `directive` | how the user wants work done: rules, corrections, approaches they confirmed | "Commit as baiirun, with no Claude attribution" |
+| `project` | the state of the work: goals, decisions, constraints, deadlines | "Extraction runs on Codex first, with Claude as the fallback" |
+| `reference` | where information lives and what it's for | "Scheduled dream runs log to ~/.spindle/dream.log" |
 
-### Overwrite in place, keep an audit log
+Directive and project memories lead with the rule or fact, then give **Why:** and **How to apply:** lines. The
+reason lets a later agent handle cases the rule didn't name.
 
-A changed fact rewrites its file, and a wrong one is deleted. Every change goes to `changes.jsonl` with the text
-before it, and `history` and `--restore` read that log. Old versions never enter context on their own. **Why:**
-Byron chose Claude Code's model over versioned or "superseded" memories. Stale versions in context mislead agents,
-but losing them outright makes mistakes unrecoverable, so the history is kept for people.
+Memory holds what stays true across sessions. Code, git history and instruction files already answer questions
+about structure and change. Memory holds what they can't: the person, their preferences, and the reasons behind
+decisions.
 
-### Hooks, MCP and files only
+### An index is always loaded; memories are recalled per message
 
-Recall, extraction and session start run as hooks. The agent writes through MCP tools rather than file tools.
-**Why:** both tools support the same hook JSON and MCP. Writing through MCP also works in Codex, whose sandbox may
-not reach `~/.spindle`.
+Each store keeps a `MEMORY.md` index: one line per memory, grouped by type and capped in size. At session start the
+agent gets instructions, the index of the project it's in, the global index, and one line for each other project.
+That's enough to know what exists.
 
-### Side models through the user's own CLIs
+On each message, a fast side model reads the newest memory descriptions together with the session's context and
+picks up to five memories that clearly bear on the message. Their full text is attached to the message.
 
-Model calls run as `claude -p` or `codex exec`, with tools, settings and saved sessions turned off. **Why:** no API
-keys or billing of spindle's own, and it uses whatever models the user already has.
+**Why:** the index orients the agent, and recall brings in detail only when it's needed. Both have fixed caps, so
+context cost doesn't grow with memory. Picking by description, with a model, matches on meaning rather than on
+shared words.
 
-- **The selector uses the session's own CLI.** On Claude that is Sonnet, as in Claude Code. In a 20-message test
-  Haiku tied with Sonnet on quality and was only about 0.4 s faster, so Sonnet stays until a larger test says
-  otherwise.
-- **Extraction and dreaming use Codex with Luna first, then fall back to Claude.** This was Byron's call. These
-  passes run in the background, so latency doesn't matter there, and Claude is kept as a dependable fallback.
-  Selection holds up the user's message, so it stays on the session's own CLI.
+### Memory is written as work happens
 
-### One client, two interfaces
+After each turn, a background pass reads the new messages and decides whether anything is worth keeping: a new
+fact, a correction to an existing memory, or a memory that turned out wrong. It reads the memories it might
+change before it writes. The agent can also write directly when the user asks it to remember or forget
+something.
 
-`memory.Client` does everything. The MCP tools and the CLI are thin wrappers that print the same text. **Why:** a
-person should be able to do and see whatever an agent can, and the two interfaces can't drift apart if they share
-one implementation.
+**Why:** people rarely stop to say "remember this". The useful signal is in ordinary conversation: corrections,
+confirmed approaches, decisions and their reasons. Running the pass in the background keeps the session fast.
 
-### Projects by meaning, all visible everywhere
+### Memory is consolidated on a schedule
 
-A project is a named store ("spindle", "eldspire"), not a repository. Every memory is named `<project>/<name>`,
-and recall, search and extraction see every project. A folder only hints at the session's project. The hint picks
-what the session starts with and where an unnamed write goes. **Why:** Byron wants work across many projects to
-feel fluid, with agents aware of all the context. Keying memory to repositories split one body of work across
-worktrees, and hid rules that apply everywhere.
+Once a day at most, and only after enough new sessions, a deeper pass ("a dream") goes over one store as a whole.
+It merges duplicates, fixes facts that recent sessions have contradicted, prunes memories that have gone stale,
+and lines memory up with the project's instruction files. A scheduled job checks every hour whether a dream is
+due.
 
-- **Global** is a store like any other, loaded in every project, for who the user is and for rules like "never
-  add Claude attribution". User-type memories go there by default.
-- **Session start lists the other projects** but doesn't load their indexes. **Why:** context stays inside the
-  10,000-character hook cap, while the agent still knows what exists. Recall and search reach the rest.
-- **The selector gets session context**: the folder, the project, the projects already recalled from, and recent
-  messages. **Why:** with many projects, the same words can mean different things. Context helps the selector
-  rank without hiding anything.
-- **A write never links a folder.** **Why:** a write can be about any project. In testing, auto-linking on the
-  first write tied Byron's spindle folder to "eldspire". Links are made on purpose, with `memory_project` or
-  `spin project --link`.
-- **No stored "current project."** The hint is worked out again on every call. **Why:** there's nothing to switch
-  and nothing to go stale. A link made mid-session takes effect at once.
+**Why:** writing turn by turn piles up near-duplicates and outdated facts. Consolidating regularly keeps each
+memory current and the index sharp. Waiting for enough new sessions means each dream has something to work on.
 
-### Dreams on a schedule
+### Files hold the current truth; history sits beside them
 
-Neither tool has a scheduled hook, so a launchd agent runs `spin dream --due` hourly. The worker also checks after
-each drain. **Why launchd over cron:**
+A changed fact rewrites its file, and a wrong memory is deleted. Every change is also recorded with the text it
+replaced, and `history` and `restore` read that record.
 
-- launchd catches up on runs missed while the Mac slept, and cron doesn't;
-- it runs as the user without needing Full Disk Access;
-- it's the system scheduler that Apple supports.
+**Why:** an agent should only ever see what is true now. Older versions in context would mislead it. People
+still need to see how a memory changed and to undo a bad change, so the history is kept for them.
 
-Each store's own gate (24 h and 5 sessions) decides whether anything runs, so frequent checks cost nothing.
+### One memory, shared across tools
 
-### Late recall goes after a tool call
+Recall, extraction and session start run as hooks, and agents read and write memory through MCP tools. Both
+Claude Code and Codex support the same hook events and MCP. The background passes run through the user's own
+`claude` and `codex` command-line tools.
 
-The prompt hook waits only 4 s. Picks that arrive later are attached after the next tool call, and dropped if the
-turn ends first. **Why:** this is what Claude Code does. A slow selector never delays the user's message, and late
-picks are rarely lost.
+**Why:** a memory tied to one tool splits the user's knowledge in two. Hooks, MCP and files are common to both
+tools. The MCP tools work wherever the agent can run, sandboxes included. Running models through the user's own
+CLIs means spindle has no keys, accounts or billing of its own.
 
-### Leave the built-in memories on
+### One memory, shared across projects
 
-On Byron's machine, Claude Code's auto memory and Codex's memories stay on alongside spindle, by his choice.
-`spin install claude` still prints `autoMemoryEnabled: false` as an option, so people can avoid two memories
-writing about the same session.
+A project is a named body of work, such as "spindle" or "eldspire", with its own store. Global is a store for
+everything that applies everywhere: who the user is, and their standing rules. Every memory is named
+`<project>/<name>`, and recall, search and extraction see every store. Folders are linked to projects, and the
+folder a session runs in suggests which project it's in. That suggestion sets the index the session starts with
+and where new memories go by default.
 
-### An activity log for people
+**Why:** people work across many projects at once, and what's learned in one often matters in another. Naming
+projects by what they're about lets one body of work span several folders and repositories. Treating the folder
+as a suggestion keeps everything in reach. Linking folders only on purpose means a memory about one project can
+be saved from anywhere without moving the session's project.
 
-`events.jsonl` records every start, pick, save, skip, extraction and dream, with timings and reasons. **Why:**
-memory that works invisibly is hard to trust or debug, and `spin log -f` makes it watchable. It is never read back
-into context.
+### Each job runs on the model that suits it
 
-## Not built yet
+- **Selection** runs on the session's own tool (Sonnet in Claude Code), because the user's message is waiting on it.
+- **Extraction and dreams** run on Codex with Luna first, falling back to Claude, because they run in the
+  background and need care more than speed.
+- **Fallback:** any failed call, or any reply that doesn't parse, moves to the next model.
 
-- **A continuation prompt at compaction.** Byron's principle is that compaction should produce a continuation
-  prompt, with decisions as only one part of it. Spindle holds durable facts only for now.
-- **Usage ranking.** Codex ranks memories that get cited higher. Here the selector simply sees the newest 200 files.
-- **Scaling past 200 candidates.** With many projects, older files fall out of the selector's view; search still
-  finds them.
-- **Cloud sessions.** Claude.ai project threads and other cloud sessions never run local hooks, so spindle only
-  sees local sessions. A remote store (for example R2 or Postgres) would fix that.
-- **A first-look gate before extraction**, beyond the 20-character rule.
-- **Quality evals for this version.** The unit tests cover mechanics. Recall and extraction quality have been
-  checked by hand end to end in both tools, not measured.
+### One core with several interfaces
+
+One client implements every memory operation. The MCP tools, the command-line interface and the hooks are thin
+layers over it, and the tools and commands print the same text.
+
+**Why:** people and agents can each do and see the same things, and the interfaces stay in step because they
+share one implementation.
+
+### Everything is observable
+
+An activity log records each session start, recall pick, write, skip, extraction and dream, with timings and
+reasons. `spin log -f` follows it live.
+
+**Why:** memory acts on its own. A log of what it did, and why, is what lets people trust it, tune it and fix it.
+
+## Prior art
+
+Spindle's file format, its four-way split of knowledge, the index, the recall selector's prompt, the
+extraction pass and dreaming all follow Claude Code's auto memory, which ships at scale and documents its
+behavior. Codex's memories informed the use of a small model for background passes. Following an established
+design keeps spindle's behavior predictable to anyone who knows those tools.
+
+## Open questions
+
+- **Compaction.** What should a session carry across a compaction? A continuation prompt that includes decisions,
+  open work and context would fit beside memory.
+- **Ranking.** Should memories that are often recalled and used rank higher when the selector has more candidates
+  than it can see?
+- **Size.** How should the selector cope past its 200 newest candidates as projects multiply?
+- **Reach.** How do cloud sessions, which run no local hooks, read and write memory? A git-backed store is one way.
+- **Quality.** How well do recall and extraction work? This needs measuring on real sessions.

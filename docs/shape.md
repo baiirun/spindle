@@ -1,93 +1,86 @@
 # The shape of spindle
 
-What spindle is and isn't, as rules a change can be checked against. If a change breaks one of these, either the
-change is wrong, or this doc changes in the same PR, with the reason added to [design.md](design.md).
+These are the rules that define spindle. A change is checked against them before it merges. If a change needs to
+break one, it updates this doc in the same PR and adds its reason to [design.md](design.md).
 
-## Invariants
+## Rules
 
 ### Memory
 
-1. **One file per subject**, in Claude Code's format: frontmatter `name`, `description`, `metadata.type`, then the
-   body. The name is kebab-case and is also the file name.
-2. **Exactly four types:** `user`, `directive`, `project`, `reference`.
-3. **Files are the truth.** `MEMORY.md` is always rebuilt by code from the files and is never hand-written. Logs and
-   state can be deleted without losing a memory.
-4. **Changes overwrite in place, and wrong memories are deleted.** There are no versions, "superseded" flags or
-   history in context. Every write and delete is appended to `changes.jsonl` with the old text.
-5. **Durable facts only.** No transcripts, activity summaries, code structure, git history or anything already in
-   CLAUDE.md or AGENTS.md.
+1. **One subject per file.** Each file has frontmatter `name`, `description` and `metadata.type`, then the body.
+   The name is kebab-case and doubles as the file name.
+2. **Four types:** `user`, `directive`, `project` and `reference`.
+3. **The files are the source of truth.** Code rebuilds `MEMORY.md` from them after every change. Logs and state
+   can be rebuilt or thrown away, and no memory is lost.
+4. **Files hold the current truth.** A changed fact rewrites its file, and a wrong memory is deleted. Every write
+   and delete is also appended to `changes.jsonl`, with the text it replaced.
+5. **Memory holds what lasts:** who the user is, how they want work done, the state and reasons of the work, and
+   where things live.
 
 ### Projects
 
-6. **Every memory belongs to exactly one store:** `global`, or one named project.
-7. **Everything is visible everywhere.** Recall, search and extraction read every store. No path filters memory by
-   project.
-8. **Outside its store, a memory is always named `<store>/<name>`**: in indexes, recall, tool results, the CLI and
-   logs.
-9. **A folder only hints.** The hint picks the starting index and where an unnamed write goes. Nothing is stored as
-   "the current project", and nothing has to be switched.
-10. **Only an explicit act links a folder**: `memory_project` or `spin project --link`. Writes, extraction and
-    dreams never do.
-11. **Projects are named by meaning**, not derived from paths or repositories.
+6. **Every memory lives in exactly one store,** either `global` or a named project.
+7. **Every store is visible everywhere.** Recall, search and extraction read all of them.
+8. **Outside its store, a memory is named `<store>/<name>`.** That holds in indexes, recall, tool results, the CLI
+   and logs.
+9. **A session's folder suggests its project.** The suggestion is worked out again on every call. It sets the
+   starting index and where an unnamed write goes.
+10. **Folders are linked to projects on purpose,** with `memory_project` or `spin project --link`.
+11. **Projects are named for what they are about.**
 
 ### Context budget
 
-12. **Session start fits in 9,500 characters**: instructions, the hinted project's index, the global index, and one
-    line per other project. Other projects' indexes are never loaded whole.
-13. **Recall picks at most 5 files per message, each cut at 4 KB, and at most 61,440 bytes per session** until a
-    compaction or clear.
-14. **The index is capped at 200 lines and 25 KB.** The oldest lines drop first.
+12. **Session start fits in 9,500 characters.** It holds the instructions, the session's project index, the global
+    index, and one line per other project.
+13. **Recall attaches at most 5 files per message,** each cut at 4 KB, up to 61,440 bytes per session. The count
+    resets at compaction or clear.
+14. **Each index is capped at 200 lines and 25 KB,** with the newest lines kept.
 
 ### Runtime
 
-15. **Hooks never block on slow work.** The only wait is the prompt hook's bounded wait for recall (4 s by default).
-    Extraction, selection and dreaming run in detached processes.
-16. **Hooks never fail a session.** Errors go to `hooks.log`, and the hook exits 0.
-17. **No recursion.** Every process spindle starts carries `SPINDLE_INNER=1`, and hooks that see it do nothing.
-18. **One writer per store at a time.** Writes take the store's lock and never hold two store locks at once.
-    At most one worker runs, and at most one dream per store.
-19. **Side models run through the user's signed-in `claude` and `codex` CLIs**, with tools, MCP, settings and saved
-    sessions turned off. Spindle has no API keys of its own.
-20. **Background passes (extraction, dreams) try Codex first and fall back to Claude.** Selection uses the
-    session's own CLI.
+15. **Hooks return quickly.** The only wait is the bounded recall wait (4 s by default). Extraction, selection and
+    dreams run in detached processes.
+16. **Hooks always let the session continue.** Errors go to `hooks.log`, and the hook exits 0.
+17. **Spindle's own model calls run with `SPINDLE_INNER=1`,** and hooks that see it return at once.
+18. **Each store has one writer at a time.** A write takes that store's lock and holds one store lock at a time. One
+    worker runs at a time, and each store has one dream at a time.
+19. **Side models run through the user's signed-in `claude` and `codex` CLIs.** Tools, MCP servers, settings and
+    saved sessions are switched off for these calls.
+20. **Background passes start on Codex and fall back to Claude.** Selection uses the session's own CLI.
 
 ### Interfaces
 
-21. **One core.** The MCP tools and the CLI are thin wrappers over `memory.Client`, at parity and with the same
-    output text. A new capability goes into the client first and then into both interfaces. `extract` and the
-    internal commands are CLI-only.
-22. **The selector's system prompt is Claude Code's recall prompt, word for word.** Session context goes in the
-    message, not the system prompt.
-23. **The agent writes through MCP, never by editing files directly**, so the same instructions work in Codex.
+21. **`memory.Client` implements every operation.** The MCP tools and the CLI wrap it and print the same text. A
+    new capability is added to the client, then to both interfaces. `extract` and the internal commands are
+    CLI-only.
+22. **The selector's system prompt stays fixed,** copied as is. Session context goes in the message.
+23. **Agents read and write memory through the MCP tools.**
 
 ### People
 
-24. **Everything a person might want to check is a plain file** under `~/.spindle`, and `spin log` shows what
-    memory did and why.
-25. **Old versions reach an agent only through `memory_history`**, which labels them as superseded.
+24. **Every piece of state is a plain file under `~/.spindle`,** and `spin log` shows what memory did and why.
+25. **Earlier versions reach an agent only through `memory_history`,** which labels them as superseded.
 
-## Non-goals
+## Scope
 
-- **Not a transcript store or search engine over sessions.** The old episode-based spindle (`v0-episodes`) was
-  that; this one is not.
-- **Not per-repository memory.** Repositories are folders that hint at a project, nothing more.
-- **Not a replacement for CLAUDE.md or AGENTS.md.** Instruction files are maintained by people and win when a
-  memory conflicts with them. Dreams reconcile memory against them.
-- **Not a task tracker or plan store.** In-progress work belongs in plans or tasks.
-- **No embeddings or vector search** while one-line descriptions and a model selector do the job.
-- **No cloud service, accounts or sync** in this version. It runs on one machine.
-- **No hidden state.** There is no database or binary format.
+Spindle's job is long-term memory for one person's agents: remembering, recalling and consolidating what they
+should know across sessions, tools and projects, on one machine. Neighbouring jobs belong to other tools:
 
-## Checking for drift
+- **Instruction files** (CLAUDE.md, AGENTS.md) are maintained by people. They take precedence, and dreams bring
+  memory in line with them.
+- **Plans and task lists** hold the work in progress.
+- **Transcripts** stay with the agent that wrote them. Spindle reads them to extract memories.
+- **Recall** works from descriptions and a model selector.
+- **State** lives in plain files on the user's machine.
 
-Before merging a change, check that:
+## Before merging
 
-- [ ] Start context and recall stay within the budgets above. `TestStartContext` and the recall tests guard this.
-- [ ] Nothing reads from only one project where every project should be visible.
-- [ ] Every new name shown to an agent or a person is a `<store>/<name>` ref.
-- [ ] Nothing new links folders, creates projects behind the user's back, or keeps a "current project".
-- [ ] Any new capability exists in `memory.Client`, `spin` and the MCP tools, or the reason it doesn't is written down.
-- [ ] The hooks still never wait on a model, apart from the bounded recall wait.
-- [ ] Prompts copied from Claude Code are still copied; any change is noted in `prompts.go`.
+- [ ] Session start and recall stay within the context budget. `TestStartContext` and the recall tests check this.
+- [ ] Every read that should see all stores sees all of them.
+- [ ] Every name shown to an agent or a person is a `<store>/<name>` ref.
+- [ ] Folder links and new projects come only from an explicit request.
+- [ ] Each new capability is in `memory.Client`, `spin` and the MCP tools, or the doc says why it's CLI-only.
+- [ ] Hooks return within the bounded recall wait.
+- [ ] Prompts copied from elsewhere are still as copied, and any change is noted in `prompts.go`.
 - [ ] `go vet ./...` and `go test ./...` pass.
-- [ ] architecture.md, usage.md and this doc still describe what the code does.
+- [ ] architecture.md, usage.md and this doc match the code.
