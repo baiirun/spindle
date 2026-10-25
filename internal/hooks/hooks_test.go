@@ -126,3 +126,64 @@ func TestInstallConfig(t *testing.T) {
 		}
 	}
 }
+
+// Invariant 16: a hook never fails a session. Bad input is an error for
+// spin to log (it still exits 0); odd events and missing fields do nothing.
+func TestOddInputDoesNothing(t *testing.T) {
+	e := setup(t)
+	var out bytes.Buffer
+	if err := e.h.Run(context.Background(), strings.NewReader("not json"), &out); err == nil || out.Len() != 0 {
+		t.Fatalf("bad input: err %v, output %q", err, out.String())
+	}
+	for _, ev := range []map[string]any{
+		{"hook_event_name": "Notification", "session_id": "s"},
+		{"hook_event_name": "Stop", "session_id": "s"},                                      // no transcript
+		{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "hello there"}, // no memories yet
+		{"hook_event_name": "PostToolUse", "session_id": "never-seen"},
+	} {
+		if o := e.run(t, ev); o.HookSpecificOutput.AdditionalContext != "" {
+			t.Errorf("%v: output %+v", ev, o)
+		}
+	}
+	if len(e.spawned) != 0 {
+		t.Errorf("spawned %v", e.spawned)
+	}
+}
+
+// After a compaction the recalled files are gone from context, so they may
+// be recalled again.
+func TestCompactionAllowsRecallAgain(t *testing.T) {
+	e := setup(t)
+	memory.Store(e.h.Home, "proj").Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
+	e.h.LocalRecall = true
+	ask := map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"}
+	if o := e.run(t, ask); !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store") {
+		t.Fatal("first recall missing")
+	}
+	if o := e.run(t, ask); o.HookSpecificOutput.AdditionalContext != "" {
+		t.Fatal("recalled twice in one context")
+	}
+	e.run(t, map[string]any{"hook_event_name": "SessionStart", "session_id": "s", "source": "compact"})
+	if o := e.run(t, ask); !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store") {
+		t.Fatal("not recalled again after compaction")
+	}
+}
+
+// Codex sends the same fields; with no --agent the transcript says which tool it is.
+func TestCodexSessionQueuesAsCodex(t *testing.T) {
+	e := setup(t)
+	e.h.Agent = ""
+	tp := filepath.Join(t.TempDir(), "rollout.jsonl")
+	os.WriteFile(tp, []byte(`{"timestamp":"2026-10-25T04:00:00Z","type":"session_meta","payload":{"id":"019e-codex","cwd":"`+e.root+`","source":"cli"}}`+"\n"), 0o644)
+	e.run(t, map[string]any{"hook_event_name": "Stop", "session_id": "019e-codex", "transcript_path": tp})
+	jobs, _ := filepath.Glob(filepath.Join(e.h.Home, "queue", "*.json"))
+	if len(jobs) != 1 {
+		t.Fatalf("jobs %v", jobs)
+	}
+	var j memory.Job
+	b, _ := os.ReadFile(jobs[0])
+	json.Unmarshal(b, &j)
+	if j.Agent != "codex" || j.Project != "proj" || j.Transcript != tp {
+		t.Errorf("job %+v", j)
+	}
+}
