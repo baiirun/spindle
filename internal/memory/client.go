@@ -123,8 +123,8 @@ func (c Client) Search(query string, limit int) (hits []Memory, total int, err e
 	return hits, total, err
 }
 
-// Index is what a session starts with: this project's index, the global
-// one, and a line per other project.
+// Index is what a session starts with, uncut: the global index, this
+// project's, and a line per other project.
 func (c Client) Index() string {
 	p := c.Context()
 	c.log(p, "index", nil, "", "", time.Now(), nil)

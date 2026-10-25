@@ -32,8 +32,9 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
 
 ### Context budget
 
-12. **Session start fits in 9,500 characters.** It holds the instructions, the session's project index, the global
-    index, and one line per other project.
+12. **Session start fits in 9,500 characters.** It holds the instructions, the global index, the session's project
+    index, and one line per other project. Each section has its own share of the space and is cut within itself,
+    so global always loads; a cut index keeps directives and the newest memories and says how many it left out.
 13. **Recall attaches at most 5 files per message,** each cut at 4 KB, up to 61,440 bytes per session. The count
     resets at compaction or clear.
 14. **Each index is capped at 200 lines and 25 KB,** with the newest lines kept.

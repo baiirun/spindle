@@ -312,6 +312,88 @@ func TestStartContextKeepsGlobalWhenProjectIsBig(t *testing.T) {
 	}
 }
 
+// With 200 project memories the project section is cut on its own: global
+// and the other projects still load, the project's directives and newest
+// memories are kept, and a line counts what was left out.
+func TestStartContextCutsWithinProjectSection(t *testing.T) {
+	p := project(t)
+	g := Store(p.Home, GlobalName)
+	g.Apply([]Op{{Op: "write", Name: "no-attribution", Type: "directive", Description: "Never add Claude attribution to commits or PRs", Body: "Never."}}, "agent", "", t0)
+	Store(p.Home, "eldspire").UpdateMeta(func(m *Meta) { m.Description = "D&D campaign" })
+	var ops []Op
+	for j := 0; j < 200; j++ {
+		ops = append(ops, Op{Op: "write", Name: fmt.Sprintf("decision-%03d", j), Type: "project", Description: "A project decision with a description long enough to be useful in an index line", Body: "b"})
+	}
+	write(t, p, ops...)
+	write(t, p, Op{Op: "write", Name: "old-rule", Type: "directive", Description: "Run the linter before pushing", Body: "b"})
+	// Make the rule the oldest memory and decision-199 the newest.
+	for j := 0; j < 200; j++ {
+		at := t0.Add(time.Duration(j+1) * time.Minute)
+		os.Chtimes(filepath.Join(p.MemDir(), fmt.Sprintf("decision-%03d.md", j)), at, at)
+	}
+	os.Chtimes(filepath.Join(p.MemDir(), "old-rule.md"), t0, t0)
+
+	s := p.StartContext()
+	if n := len([]rune(s)); n > StartBudget {
+		t.Fatalf("start context is %d characters, budget %d", n, StartBudget)
+	}
+	for _, want := range []string{"global/no-attribution.md", "- eldspire", "proj/old-rule.md", "proj/decision-199.md", "more in proj, use memory_search"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("start context lost %q:\n%s", want, s[len(Instructions):])
+		}
+	}
+	if strings.Contains(s, "proj/decision-000.md") {
+		t.Errorf("the oldest decision was kept over newer ones")
+	}
+	if g, pr := strings.Index(s, "# global"), strings.Index(s, "# proj"); g < 0 || pr < 0 || g > pr {
+		t.Errorf("global should come before the project (at %d and %d)", g, pr)
+	}
+}
+
+// memory_index isn't bound by the start budget: it lists every memory.
+func TestIndexToolIsNotCut(t *testing.T) {
+	p := project(t)
+	var ops []Op
+	for j := 0; j < 120; j++ {
+		ops = append(ops, Op{Op: "write", Name: fmt.Sprintf("m-%03d", j), Type: "project", Description: "A project decision with a description long enough to be useful", Body: "b"})
+	}
+	write(t, p, ops...)
+	if n := strings.Count(p.Client("cli").Index(), "\n- ["); n != 120 {
+		t.Errorf("index lists %d of 120 memories", n)
+	}
+}
+
+// The global dream is told global's room at session start and how much it
+// uses, so it can keep global small enough to load whole.
+func TestGlobalDreamIsToldItsRoom(t *testing.T) {
+	p := project(t)
+	g := Store(p.Home, GlobalName)
+	var ops []Op
+	for j := 0; j < 30; j++ {
+		ops = append(ops, Op{Op: "write", Name: fmt.Sprintf("rule-%02d", j), Type: "directive", Description: "A rule that applies in every project, described at some length", Body: "b"})
+	}
+	g.Apply(ops, "agent", "", t0)
+	var calls []string
+	m := fake(t, &calls, func(system, prompt string) string {
+		if !strings.Contains(prompt, fmt.Sprintf("in about %d characters", GlobalRoom())) || !strings.Contains(prompt, "That is over") {
+			t.Errorf("global dream prompt lacks its size:\n%s", prompt[strings.Index(prompt, "## Instruction files"):])
+		}
+		return `{"ops":[],"summary":"nothing to change"}`
+	})
+	if _, err := Dream(context.Background(), g, m, t0); err != nil {
+		t.Fatal(err)
+	}
+	m = fake(t, &calls, func(system, prompt string) string {
+		if strings.Contains(prompt, "## Size") {
+			t.Errorf("a project's dream was given global's size")
+		}
+		return `{"ops":[],"summary":"nothing to change"}`
+	})
+	if _, err := Dream(context.Background(), p, m, t0); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Invariant 13: each recalled file is cut at 4 KB, whatever its script.
 func TestRecalledFileCutAtFourKilobytes(t *testing.T) {
 	for _, body := range []string{strings.Repeat("a", 6000), strings.Repeat("é", 3000), strings.Repeat("✓", 2000)} {

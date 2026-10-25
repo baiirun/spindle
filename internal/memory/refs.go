@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -215,52 +214,11 @@ func (s Project) applyLocked(ops []Op, by, session string, now time.Time) (Resul
 }
 
 // RefIndex is the store's MEMORY.md with links named as references.
-func (p Project) RefIndex() string {
-	return strings.ReplaceAll(p.ReadIndex(), "](", "]("+p.Name+"/")
-}
+func (p Project) RefIndex() string { return refIndex(p, p.ReadIndex()) }
 
-// indexText is what a session sees of memory: this project's index, the
-// global one, and a line for every other project.
-func (p Project) indexText() string {
-	var b strings.Builder
-	if p.Name != "" && !p.IsGlobal() {
-		meta := p.Meta()
-		fmt.Fprintf(&b, "# %s (this folder's project)\n\n", p.Name)
-		if meta.Description != "" {
-			b.WriteString(meta.Description + "\n\n")
-		}
-		if s := strings.TrimSpace(p.RefIndex()); s != "" {
-			b.WriteString(s + "\n\n")
-		} else {
-			b.WriteString("No memories yet.\n\n")
-		}
-	} else if p.Name == "" {
-		fmt.Fprintf(&b, "# No project for this folder\n\n%s isn't linked to a project. To save something about this work, link it to a related project below or to a new one with memory_project (link_this_folder), or ask the user if it isn't clear which. Until then, name the project on each write.\n\n", orDash(p.Cwd))
-	}
-	g := Store(p.Home, GlobalName)
-	b.WriteString("# global (every project)\n\n")
-	if s := strings.TrimSpace(g.RefIndex()); s != "" {
-		b.WriteString(s + "\n\n")
-	} else {
-		b.WriteString("No memories yet.\n\n")
-	}
-	ps, _ := Projects(p.Home)
-	var others []string
-	for _, o := range ps {
-		if o.Name == p.Name {
-			continue
-		}
-		mems, _ := o.Load()
-		line := fmt.Sprintf("- %s (%d memories)", o.Name, len(mems))
-		if d := o.Meta().Description; d != "" {
-			line += ": " + clipRunes(d, 140)
-		}
-		others = append(others, line)
-	}
-	if len(others) > 0 {
-		b.WriteString("# Other projects\n\nRecall and memory_search cover these too.\n\n" + strings.Join(others, "\n") + "\n")
-	}
-	return b.String()
+// refIndex names the links of index text of store s as references.
+func refIndex(s Project, index string) string {
+	return strings.ReplaceAll(index, "](", "]("+s.Name+"/")
 }
 
 // wroteSince reports whether by wrote to any store after t.

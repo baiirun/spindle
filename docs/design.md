@@ -50,8 +50,9 @@ decisions.
 ### An index is always loaded; memories are recalled per message
 
 Each store keeps a `MEMORY.md` index: one line per memory, grouped by type and capped in size. At session start the
-agent gets instructions, the index of the project it's in, the global index, and one line for each other project.
-That's enough to know what exists.
+agent gets instructions, the global index, the index of the project it's in, and one line for each other project.
+That's enough to know what exists. Each part has its own share of the space, so rules that apply everywhere are never
+crowded out by one busy project.
 
 On each message, a fast side model reads the newest memory descriptions together with the session's context and
 picks up to five memories that clearly bear on the message. Their full text is attached to the message.
