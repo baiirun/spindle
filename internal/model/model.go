@@ -81,13 +81,9 @@ func (c Claude) Complete(ctx context.Context, system, prompt, schema string) (st
 	if err != nil {
 		return "", err
 	}
-	var res struct {
-		Result           string          `json:"result"`
-		IsError          bool            `json:"is_error"`
-		StructuredOutput json.RawMessage `json:"structured_output"`
-	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return "", fmt.Errorf("claude output: %w", err)
+	res, err := parseClaude(out)
+	if err != nil {
+		return "", err
 	}
 	if res.IsError {
 		return "", fmt.Errorf("claude: %s", clip(res.Result, 300))
@@ -99,6 +95,37 @@ func (c Claude) Complete(ctx context.Context, system, prompt, schema string) (st
 		return JSONObject(res.Result), nil
 	}
 	return res.Result, nil
+}
+
+type claudeResult struct {
+	Type             string          `json:"type"`
+	Result           string          `json:"result"`
+	IsError          bool            `json:"is_error"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+}
+
+// parseClaude reads `claude -p --output-format json`: one result object, or,
+// when the user's settings turn on verbose (which --setting-sources "" does
+// not stop), an array of every event, whose last "result" event is the answer.
+func parseClaude(out []byte) (claudeResult, error) {
+	var res claudeResult
+	out = bytes.TrimSpace(out)
+	if len(out) > 0 && out[0] == '[' {
+		var evs []claudeResult
+		if err := json.Unmarshal(out, &evs); err != nil {
+			return res, fmt.Errorf("claude output: %w", err)
+		}
+		for i := len(evs) - 1; i >= 0; i-- {
+			if evs[i].Type == "result" {
+				return evs[i], nil
+			}
+		}
+		return res, fmt.Errorf("claude output: no result event in %d events", len(evs))
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return res, fmt.Errorf("claude output: %w", err)
+	}
+	return res, nil
 }
 
 // Codex runs `codex exec` read-only and ephemeral.
