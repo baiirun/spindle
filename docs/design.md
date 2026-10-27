@@ -47,6 +47,97 @@ Memory holds what stays true across sessions. Code, git history and instruction 
 about structure and change. Memory holds what they can't: the person, their preferences, and the reasons behind
 decisions.
 
+### Named things get one note each
+
+> **Status:** designed, not yet built. The rest of this doc describes spindle as it runs today.
+
+Work keeps touching the same nouns: the person who wrote an essay, the company behind a tool, the post that changed
+a decision, the character a campaign keeps returning to. An **entity note** is a memory about one such thing. It
+gives each thing one place to be true, and links from other memories let a single recall bring in what surrounds
+it.
+
+An entity note is an ordinary memory of type `reference` with one **kind** that says what the thing is. Types say
+how an agent should use what it knows; kinds say what a note is about. How to act around an entity stays in typed
+memories that link to it: a `directive` saying "send Dana drafts as docs" links to `[[person/dana]]`.
+
+The note's name is `<kind>/<slug>`, its file is `<store>/<kind>/<slug>.md`, and outside its store it is
+`<store>/<kind>/<slug>`, such as `global/person/maggie-appleton`. A kind's own fields sit under `metadata`, and
+links to other notes are plain `[[kind/slug]]`.
+
+```yaml
+---
+name: link/planning-with-agents
+description: Maggie Appleton essay; steer agents with visual boundary objects in thicker interfaces
+metadata:
+  type: reference
+  kind: link
+  url: https://maggieappleton.com/planning-agents
+  title: "Planning with Agents: Divided Worlds, Boundary Objects, and Thicker Interfaces"
+  author: "[[person/maggie-appleton]]"
+  published: 2026-09-14
+  saved: 2026-10-25
+---
+Text plans and multiple-choice questions are a poor way for people to steer agents. Better to share visual
+boundary objects where agents prototype options and people decide.
+
+Why it mattered: came up while designing how threads ask for decisions.
+Concepts: [[concept/agent-interfaces]], [[concept/decision-card]]
+```
+
+A link note always carries its URL and the reason it mattered. Spindle sees the conversation where a source came up,
+so it can write the why that a bookmark alone never records.
+
+**Kinds are a curated memory.** Each store has a `kinds.md` listing its kinds, one line each, with what belongs
+there and the kind's fields. Every store starts from the same seed:
+
+```markdown
+# Kinds
+- person: a real individual the user works with, reads or follows. Fields: url, aliases.
+- org: a company, team or publication. Fields: url.
+- link: a saved external source: a post, paper, video, tweet or repo. Fields: url (required), title, author, published, saved.
+- tool: software, a service or a library the user uses or weighs up. Fields: url.
+- concept: a named idea, term or theme the user keeps coming back to, with a body saying what it means to them.
+- other: anything that fits none of the above, held for the next dream.
+```
+
+A project store grows its own kinds: an Eldspire store would likely add `character`, `faction`, `place` and
+`session`. A kind name means the same thing in every store, so `[[person/...]]` reads the same everywhere. A store
+holds at most 12 kinds. A kind names what a thing is, never how finished its note is.
+
+**Concepts are the hubs.** A named idea gets a `concept` note with a body that says what it means to the user, and
+every note that links to it is listed on it automatically. Broad domains such as "design" get no concept note: they
+cover too much to steer recall.
+
+**Each part treats entities in its own way:**
+
+| Part | What it does with entities | Can change kinds |
+|---|---|---|
+| Extraction | Writes or updates a note when a named thing will matter again: a URL shared or researched, a person or org that keeps coming up. Matches an existing note by URL, name or alias first, picks a kind from `kinds.md` or `other`, and links typed memories to it. | No |
+| Index | Lists typed memories as now, plus one line per kind with a count, such as "link: 168 saved sources". | No |
+| Recall | Reads `kinds.md`. An entity joins the candidates when the message names it (name, alias, title or URL), or one hop out from a recalled memory. All of it shares the 5-file cap. | No |
+| Agent tools | `memory_search` filters by kind, and by what links to a concept. | No |
+| Dream | Curates kinds, fills stubs, writes concept bodies, merges duplicate URLs, flags dead ones. | Yes |
+| People | Edit any note or `kinds.md` by hand. | Yes |
+
+A dream curates kinds after its usual merge and prune:
+
+1. **Promote.** When three or more `other` notes share a shape, add a kind, move them, and add its line.
+2. **Merge.** Fold a kind into its nearest neighbour when the two overlap, or when it has had fewer than three notes
+   for 30 days.
+3. **Fill stubs.** When three or more notes link to an entity with no note, write the note from what they say.
+4. **Clean links.** Merge link notes that share a URL, and flag a URL that no longer resolves.
+5. **Respect the cap.** At 12 kinds, a new kind needs a merge first.
+
+Moving a note renames its file and rewrites every `[[link]]` to it. Each step is one entry in `changes.jsonl`
+(`kind_add`, `kind_merge`, `move`), so `history` shows it and `restore` undoes it. A hand edit to `kinds.md` is the
+user's choice, and a dream leaves it in place.
+
+**Why:** one kind per note keeps each thing in one obvious place. Keeping entities out of the per-line index and
+recalling them by name keeps the context budget where it is however many links and people pile up. Extraction and
+recall run often and fast, so they only read the taxonomy; the dream sees a whole store at once and runs at most
+daily, so it is the one that changes it. A `[[link]]` to a missing note is fine: it is a stub until enough notes
+point at it to write one.
+
 ### An index is always loaded; memories are recalled per message
 
 Each store keeps a `MEMORY.md` index: one line per memory, grouped by type and capped in size. At session start the
@@ -153,6 +244,10 @@ extraction pass and dreaming all follow Claude Code's auto memory, which ships a
 behavior. Codex's memories informed the use of a small model for background passes. Following an established
 design keeps spindle's behavior predictable to anyone who knows those tools.
 
+Entity notes follow the author's Zaum notes database: 913 notes, each with at most one category, where links carry
+a URL and an author, typed relations run both ways, and some categories carry their own fields. Two of its rules
+carry over as they are: an unresolved link is a breadcrumb, and a category never names a stage of development.
+
 ## Open questions
 
 - **Compaction.** What should a session carry across a compaction? A continuation prompt that includes decisions,
@@ -162,4 +257,10 @@ design keeps spindle's behavior predictable to anyone who knows those tools.
 - **Size.** How should the selector cope past its 200 newest candidates as projects multiply?
 - **Reach.** Cloud sessions run no local hooks. A source can read them so memory learns from them; how they read
   and write memory themselves is still open, and a git-backed store is one way.
+- **Seeding entities.** Import Zaum's links, people and organizations (419 notes) into global once, or leave Zaum
+  as the source and link out to it?
+- **Where shared entities live.** Should a dream move an entity to global once two projects link to it?
+- **Dead links.** Checking URLs needs network access during dreams. Flag them, or skip the check?
+- **Naming in recall.** Exact name and alias matching is cheap and certain. Should the selector also see entity
+  descriptions?
 - **Quality.** How well do recall and extraction work? This needs measuring on real sessions.

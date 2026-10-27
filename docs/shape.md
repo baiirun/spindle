@@ -72,6 +72,23 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
 27. **A cursor is a position in a session, so no message is read twice.** A new source starts from the time it
     was added, not from its history.
 
+## Planned: entity notes
+
+These rules join the Memory section when entity notes are built (see "Named things get one note each" in
+[design.md](design.md)). Until then they bind the design, not the code.
+
+- **An entity note has exactly one kind,** from its store's `kinds.md` or `other`. Its name is `<kind>/<slug>` and
+  its type is `reference`.
+- **Each store has one `kinds.md`, with at most 12 kinds.** Only dreams and people change it. Extraction and recall
+  read it.
+- **The four types stay fixed.** Kinds are the only curated taxonomy.
+- **A link note has a URL, and each URL has one link note per store.**
+- **Relations are stored one way.** The index derives backlinks.
+- **A `[[link]]` to a missing note is allowed.** It is a stub until a dream or a person writes the note.
+- **Entities stay out of the per-line index.** `MEMORY.md` shows one line per kind, so session start keeps its
+  9,500-character budget.
+- **Every kind change is logged** in `changes.jsonl` and can be restored.
+
 ## Scope
 
 Spindle's job is long-term memory for one person's agents: remembering, recalling and consolidating what they
