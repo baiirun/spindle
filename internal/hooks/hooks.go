@@ -1,6 +1,7 @@
 // Package hooks connects Claude Code and Codex hook events to memory. Both tools send the same JSON on stdin (session_id,
 // transcript_path, cwd, hook_event_name and per-event fields) and read the
 // same hookSpecificOutput.additionalContext back, so one handler serves both.
+// OpenCode's plugin (opencode.js) sends its events in the same shape.
 //
 //	SessionStart      instructions and the indexes (this folder's project, global, the rest); after compaction, recall may repeat
 //	UserPromptSubmit  start the selector; wait a few seconds and attach its picks if they are ready
@@ -47,7 +48,7 @@ type Output struct {
 // Handler runs hook events.
 type Handler struct {
 	Home  string
-	Agent string // claude or codex; empty: detect from the transcript
+	Agent string // claude, codex or opencode; empty: detect from the transcript
 	// Spawn starts a detached `spin` with these arguments.
 	Spawn func(args ...string) error
 	// RecallWait is how long the prompt hook waits for the selector.

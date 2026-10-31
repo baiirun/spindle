@@ -1,5 +1,15 @@
 # Changelog
 
+## OpenCode
+
+- `spin install opencode` prints a plugin for OpenCode 2 to save as `~/.config/opencode/plugins/spindle.js`, with
+  the `mcp` entry for `opencode.json` in its header. It sends OpenCode's session hooks to `spin hook --agent
+  opencode`: the start context goes in the system prompt, and picks go after the message they came with.
+- The plugin appends each session's messages to `~/.spindle/opencode/<session>.jsonl`, which extraction reads.
+  Subagent sessions are skipped.
+- `scripts/check-opencode-api.sh [VERSION]` checks that OpenCode's published plugin API still has what the plugin
+  uses.
+
 ## Sources
 
 - Sessions come from sources: `claude-code` and `codex` to start, listed in `~/.spindle/sources.json` (both when

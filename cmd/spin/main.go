@@ -27,7 +27,7 @@ import (
 
 const usage = `usage: spin <command> [flags]
 
-  hook      handle one Claude Code or Codex hook event (JSON on stdin)
+  hook      handle one Claude Code, Codex or OpenCode hook event (JSON on stdin)
   mcp       serve the memory tools over stdio
   status    this folder's project: how many memories, last dream; counts for the rest
   sources   where sessions come from and when each was last swept (add KIND, rm KIND)
@@ -40,7 +40,7 @@ const usage = `usage: spin <command> [flags]
   index     print what a session here starts with: this project's index, global, the rest
   history   one memory's changes, who made them and the text before (--restore N puts one back)
   log       show memory activity across projects: recalls, saves, tool calls (-f to follow)
-  install   print the hook and MCP config for claude or codex, or the dream schedule (launchd)
+  install   print the hook and MCP config for claude, codex or opencode, or the dream schedule (launchd)
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate; --due sweeps, then runs every due project)
   extract   run extraction on one transcript now
   worker    sweep the sources and drain the extraction queue (hooks start it)
@@ -114,7 +114,7 @@ func run(home, cmd string, args []string) error {
 // runHook always exits 0: a memory failure must never block a session.
 func runHook(home string, args []string) error {
 	fs := flag.NewFlagSet("hook", flag.ExitOnError)
-	agent := fs.String("agent", "", "claude or codex (default: detect from the transcript)")
+	agent := fs.String("agent", "", "claude, codex or opencode (default: detect from the transcript)")
 	fs.Parse(args)
 	wait := 4 * time.Second
 	if v, err := strconv.ParseFloat(os.Getenv("SPINDLE_RECALL_WAIT"), 64); err == nil {
@@ -163,7 +163,7 @@ func projectFlag(fs *flag.FlagSet) *string {
 func runMCP(home string, args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	name := projectFlag(fs)
-	agent := fs.String("agent", "", "claude or codex, for the activity log")
+	agent := fs.String("agent", "", "claude, codex or opencode, for the activity log")
 	fs.Parse(args)
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -416,7 +416,7 @@ func runInstall(home string, args []string) error {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	bin := fs.String("bin", "", "path to spin (default: this binary)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: spin install [--bin PATH] claude|codex|launchd\n\nPrints the config to merge by hand; nothing is written.")
+		fmt.Fprintln(fs.Output(), "usage: spin install [--bin PATH] claude|codex|opencode|launchd\n\nPrints the config to merge by hand; nothing is written.")
 	}
 	fs.Parse(args)
 	if fs.NArg() != 1 {

@@ -60,3 +60,27 @@ func TestCodex(t *testing.T) {
 		t.Fatal("subagent not flagged")
 	}
 }
+
+func TestOpencode(t *testing.T) {
+	p := write(t,
+		`{"type":"session","agent":"opencode","id":"ses_4a1b2c3d4e","cwd":"/w"}`,
+		`{"type":"message","mid":"msg_1","role":"user","time":"2026-10-25T04:00:00.000Z","text":"Use Postgres."}`,
+		`{"type":"message","role":"assistant","time":"2026-10-25T04:00:01.000Z","text":""}`,
+		`{"type":"message","role":"user","time":"2026-10-25T04:00:02.000Z","text":"<system-reminder>x</system-reminder>"}`,
+		`{"type":"message","role":"assistant","time":"2026-10-25T04:00:03.000Z","text":"OK."}`,
+	)
+	s, err := Read(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Agent != "opencode" || s.ID != "ses_4a1b2c3d4e" || s.Cwd != "/w" || s.Subagent || len(s.Messages) != 2 {
+		t.Fatalf("session = %+v", s)
+	}
+	if s.Messages[0].ID != "opencode:ses_4a1b#L2" || s.Messages[1].Text != "OK." || s.Messages[1].Line != 5 {
+		t.Fatalf("messages = %+v", s.Messages)
+	}
+	sub := write(t, `{"type":"session","agent":"opencode","id":"ses_x","parentID":"ses_y"}`)
+	if s, _ := Read(sub); !s.Subagent {
+		t.Fatal("subagent not flagged")
+	}
+}

@@ -1,17 +1,26 @@
 package hooks
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"strings"
 )
 
+//go:embed opencode.js
+var opencodePlugin string
+
 // InstallConfig returns the hook and MCP config for one tool, to merge by
-// hand. Both take the same hooks shape; one `spin hook` command serves every
-// event, reading hook_event_name from stdin.
+// hand. Claude Code and Codex take the same hooks shape; one `spin hook`
+// command serves every event, reading hook_event_name from stdin. OpenCode
+// gets a plugin that sends its events to that same command.
 func InstallConfig(agent, bin string) (string, error) {
+	if agent == "opencode" {
+		b, _ := json.Marshal(bin)
+		return strings.ReplaceAll(opencodePlugin, "__SPIN__", string(b)), nil
+	}
 	if agent != "claude" && agent != "codex" {
-		return "", fmt.Errorf("unknown agent %q: want claude or codex", agent)
+		return "", fmt.Errorf("unknown agent %q: want claude, codex or opencode", agent)
 	}
 	cmd := quote(bin) + " hook --agent " + agent
 	handler := func(timeout int, async bool) []map[string]any {

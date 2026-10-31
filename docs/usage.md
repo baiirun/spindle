@@ -34,6 +34,21 @@ This prints a block to merge into `~/.codex/hooks.json` and an `[mcp_servers.spi
 `~/.codex/config.toml`. Codex skips hooks it hasn't trusted. Trust them with `/hooks` in the Codex **CLI**; the
 desktop app's `/hooks` does nothing. Trust is stored in `config.toml` under `hooks.state`.
 
+### OpenCode
+
+```sh
+spin install opencode > ~/.config/opencode/plugins/spindle.js
+```
+
+OpenCode has no command hooks, so this prints a plugin for OpenCode 2's plugin API instead (1.x plugins use another
+API and won't load it). It passes OpenCode's session hooks to `spin hook --agent opencode` and puts what comes back
+into each model request: the start context in the system prompt, picks as a reminder after the message they came
+with. Picks aren't written into OpenCode's history, so after a restart a session no longer shows the ones it had.
+OpenCode keeps sessions in its database, so the plugin also appends each session's messages to `~/.spindle/opencode/`
+for extraction. Subagent sessions are skipped. The comment at the top of the file has the `mcp` entry to merge into
+`~/.config/opencode/opencode.json`. Stop rides on OpenCode's `experimental.idle` hook, which may change between
+releases; `scripts/check-opencode-api.sh` checks the plugin against the latest published API.
+
 ### Dream schedule (macOS)
 
 ```sh
@@ -57,8 +72,10 @@ every project's memories stay visible everywhere. Agents can do the same with `m
 
 ### Undo
 
-- Remove the `spin hook` entries from `~/.claude/settings.json` and `~/.codex/hooks.json`.
-- `claude mcp remove --scope user spindle`, and delete `[mcp_servers.spindle]` from `~/.codex/config.toml`.
+- Remove the `spin hook` entries from `~/.claude/settings.json` and `~/.codex/hooks.json`, and delete
+  `~/.config/opencode/plugins/spindle.js`.
+- `claude mcp remove --scope user spindle`, delete `[mcp_servers.spindle]` from `~/.codex/config.toml` and the
+  `spindle` entry under `mcp` in `~/.config/opencode/opencode.json`.
 - `launchctl bootout gui/$(id -u)/com.spindle.dream`, then delete the plist.
 - Memory stays in `~/.spindle` until you delete it.
 
@@ -86,14 +103,14 @@ project, then in global, then in any project that has it.
 | `spin dream [--force]` | Dream this folder's project, if its gate is open (`--force`: anyway). |
 | `spin dream --due` | Sweep the sources and extract what they found, then dream every store whose gate is open. The schedule runs this. |
 | `spin extract TRANSCRIPT` | Run one extraction pass over a transcript now. The project comes from the transcript's folder. |
-| `spin install claude\|codex\|launchd [--bin PATH]` | Print config to merge by hand. Nothing is written. |
+| `spin install claude\|codex\|opencode\|launchd [--bin PATH]` | Print config to merge by hand, or the OpenCode plugin. Nothing is written. |
 
 Hooks and background work call these; you don't run them yourself:
 
 | Command | Started by |
 |---|---|
-| `spin hook --agent claude\|codex` | Every hook event, with the event JSON on stdin |
-| `spin mcp --agent claude\|codex` | The agent, as its MCP server |
+| `spin hook --agent claude\|codex\|opencode` | Every hook event, with the event JSON on stdin |
+| `spin mcp --agent claude\|codex\|opencode` | The agent, as its MCP server |
 | `spin worker [--no-dream]` | The `Stop`, `PreCompact` and `SessionEnd` hooks, to sweep the sources and drain the extraction queue |
 | `spin select --session S --id ID --agent A` | The `UserPromptSubmit` hook, to run the recall selector |
 
@@ -156,6 +173,7 @@ cursors.json                how far extraction has read each session
 sources.json                where sessions come from (optional; see Sources)
 sweeps.json                 how far each source has been swept
 recall/<session>.json       what a session was shown, and its pending pick
+opencode/<session>.jsonl    OpenCode sessions, written by the plugin for extraction
 queue/                      extraction jobs waiting for the worker
 hooks.log                   hook errors (hooks never fail a session)
 worker.log                  extraction, dreams the worker ran, model fallbacks
