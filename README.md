@@ -1,12 +1,12 @@
 # spindle
 
-One long-term memory for Claude Code and Codex, shared across all of your projects. Memories are typed Markdown
+One long-term memory for Claude Code, Codex and OpenCode, shared across all of your projects. Memories are typed Markdown
 files (user, directive, project, reference). A background pass writes them after each turn. A side-model selector
 recalls them per message, and they are consolidated daily. Everything runs through the tools' hooks and an MCP
 server, and is kept as plain files in `~/.spindle`.
 
     go build -o ~/go/bin/spin ./cmd/spin
-    spin install claude                # or codex, or launchd: prints config to merge
+    spin install claude                # or codex, opencode, launchd: prints config to merge
     spin project spindle --link .      # name this folder's project (it only hints; every project stays visible)
     spin log -f                        # watch recalls, saves and tool calls as they happen
 

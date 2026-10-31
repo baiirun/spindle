@@ -127,6 +127,24 @@ func TestInstallConfig(t *testing.T) {
 	}
 }
 
+// OpenCode's plugin is a file, not hooks to merge: it must carry the binary
+// as a JS string and hand every event to `spin hook --agent opencode`.
+func TestInstallOpencode(t *testing.T) {
+	out, err := InstallConfig("opencode", `/opt/my "bin"/spin`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "__SPIN__") || !strings.Contains(out, `const SPIN = "/opt/my \"bin\"/spin"`) {
+		t.Fatalf("binary not filled in:\n%s", out)
+	}
+	for _, s := range []string{`"hook", "--agent", "opencode"`, `"mcp", "--agent", "opencode"`,
+		`"SessionStart"`, `"UserPromptSubmit"`, `"PostToolUse"`, `"Stop"`, `"PreCompact"`} {
+		if !strings.Contains(out, s) {
+			t.Errorf("plugin lacks %s", s)
+		}
+	}
+}
+
 // Invariant 16: a hook never fails a session. Bad input is an error for
 // spin to log (it still exits 0); odd events and missing fields do nothing.
 func TestOddInputDoesNothing(t *testing.T) {

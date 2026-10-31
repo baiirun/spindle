@@ -1,7 +1,8 @@
-// Package transcript reads Claude Code and Codex session transcripts into one
+// Package transcript reads Claude Code, Codex and OpenCode session transcripts into one
 // shape: the human's and the assistant's messages, in order, each with the
 // transcript line it came from. Tool calls and harness-injected text are left
-// out; memory is about what the user and the assistant said.
+// out; memory is about what the user and the assistant said. OpenCode keeps
+// sessions in a database; its transcripts are the ones spindle's plugin writes.
 package transcript
 
 import (
@@ -24,7 +25,7 @@ type Message struct {
 
 // Session is one transcript.
 type Session struct {
-	Agent    string // "claude" or "codex"
+	Agent    string // "claude", "codex" or "opencode"
 	ID       string
 	Cwd      string
 	Path     string
@@ -32,20 +33,24 @@ type Session struct {
 	Messages []Message
 }
 
-// Read parses a transcript, telling the two formats apart by content.
+// Read parses a transcript, telling the formats apart by content.
 func Read(path string) (Session, error) {
 	agent, err := Detect(path)
 	if err != nil {
 		return Session{}, err
 	}
-	if agent == "codex" {
+	switch agent {
+	case "codex":
 		return readCodex(path)
+	case "opencode":
+		return readOpencode(path)
 	}
 	return readClaude(path)
 }
 
 // Detect says which tool wrote a transcript: a Codex rollout's lines carry a
-// type and a payload; Claude Code's carry a sessionId.
+// type and a payload; Claude Code's carry a sessionId; the OpenCode plugin's
+// start with a session line naming the agent.
 func Detect(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -58,9 +63,13 @@ func Detect(path string) (string, error) {
 			Type      string          `json:"type"`
 			Payload   json.RawMessage `json:"payload"`
 			SessionID string          `json:"sessionId"`
+			Agent     string          `json:"agent"`
 		}
 		if json.Unmarshal(sc.Bytes(), &l) != nil {
 			continue
+		}
+		if l.Type == "session" && l.Agent == "opencode" {
+			return "opencode", nil
 		}
 		if len(l.Payload) > 0 {
 			return "codex", nil
@@ -219,6 +228,46 @@ func readCodex(path string) (Session, error) {
 				continue
 			}
 			s.Messages = append(s.Messages, Message{ID: id("codex", s.ID, line), Line: line, Time: l.Timestamp, Role: it.Role, Text: strings.Join(parts, "\n\n")})
+		}
+	}
+	return s, sc.Err()
+}
+
+// readOpencode reads what the OpenCode plugin writes: a session line, then a
+// line per message, with the text the user and the assistant wrote. The
+// plugin only appends, so a message's line never moves.
+func readOpencode(path string) (Session, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Session{}, err
+	}
+	defer f.Close()
+	s := Session{Agent: "opencode", Path: path}
+	sc := scanner(f)
+	for line := 1; sc.Scan(); line++ {
+		var l struct {
+			Type     string    `json:"type"`
+			ID       string    `json:"id"`
+			Cwd      string    `json:"cwd"`
+			ParentID string    `json:"parentID"`
+			Role     string    `json:"role"`
+			Time     time.Time `json:"time"`
+			Text     string    `json:"text"`
+		}
+		if json.Unmarshal(sc.Bytes(), &l) != nil {
+			continue
+		}
+		switch l.Type {
+		case "session":
+			if s.ID == "" {
+				s.ID, s.Cwd, s.Subagent = l.ID, l.Cwd, l.ParentID != "" // task sessions have a parent
+			}
+		case "message":
+			text := strings.TrimSpace(l.Text)
+			if text == "" || (l.Role != "user" && l.Role != "assistant") || (l.Role == "user" && isInjected(text)) {
+				continue
+			}
+			s.Messages = append(s.Messages, Message{ID: id("opencode", s.ID, line), Line: line, Time: l.Time, Role: l.Role, Text: text})
 		}
 	}
 	return s, sc.Err()

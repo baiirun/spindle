@@ -6,7 +6,7 @@ This is the mechanism: what runs, when, what it reads and writes. [design.md](de
 ## Pieces
 
 ```
-Claude Code / Codex session
+Claude Code / Codex session (OpenCode: through its plugin)
   │ hook events (JSON on stdin)         │ MCP tool calls (stdio)
   ▼                                     ▼
 spin hook ──────────────┐        spin mcp
@@ -31,7 +31,7 @@ internal/hooks     internal/memory.Client  ◄── spin show/write/search/... 
 | `internal/memory` | Stores, projects, refs, recall, extraction, dreaming, the queue and worker, logs, prompts. |
 | `internal/model` | Side-model calls through the `claude` and `codex` CLIs, and the Codex-then-Claude fallback. |
 | `internal/source` | The places sessions come from: lists the sessions each one has that changed, and reads one session. |
-| `internal/transcript` | Reads Claude Code and Codex transcripts into one list of user and assistant messages, leaving out tool calls and injected text. |
+| `internal/transcript` | Reads Claude Code and Codex transcripts, and the OpenCode plugin's, into one list of user and assistant messages, leaving out tool calls and injected text. |
 
 Hooks never wait on a model except the prompt hook's short wait for recall. Anything slow runs in a detached
 `spin` process that carries `SPINDLE_INNER=1`, so the hooks fired by its own `claude` or `codex` calls do nothing.
