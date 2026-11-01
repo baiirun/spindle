@@ -9,6 +9,7 @@ server, and is kept as plain files in `~/.spindle`.
     spin install claude                # or codex, opencode, launchd: prints config to merge
     spin project spindle --link .      # name this folder's project (it only hints; every project stays visible)
     spin log -f                        # watch recalls, saves and tool calls as they happen
+    spin tui                           # browse memories: projects, memories, each one's body, history and recalls
 
 ## Docs
 

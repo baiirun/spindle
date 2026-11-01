@@ -100,6 +100,7 @@ project, then in global, then in any project that has it.
 | `spin rm [--reason WHY] NAME` | Delete a memory. |
 | `spin history [--full] [--restore N] NAME` | Every change to a memory, newest first. `--full` shows the old text; `--restore N` puts back the version change N replaced or deleted. |
 | `spin log [-f] [-n N] [--session S] [--kind K] [--project P] [--json]` | The activity log across projects. `-f` follows it. Kinds: start, select, recall, skip, call, extract, sweep, dream. |
+| `spin tui [--project P]` | A read-only terminal viewer. Projects on the left (global first, `*` marks this folder's), the selected project's memories in the middle, and the selected memory on the right: `b` its body, `h` its history (as `spin history --full`), `a` the activity that names it (as `spin log`, newest first). `←`/`→` or `tab` move between panes, `↑`/`↓` or `j`/`k` move or scroll, `/` searches every project as `spin search` does (`esc` ends it), `r` rereads the files, `q` quits. Browsing isn't written to the activity log. |
 | `spin dream [--force]` | Dream this folder's project, if its gate is open (`--force`: anyway). |
 | `spin dream --due` | Sweep the sources and extract what they found, then dream every store whose gate is open. The schedule runs this. |
 | `spin extract TRANSCRIPT` | Run one extraction pass over a transcript now. The project comes from the transcript's folder. |

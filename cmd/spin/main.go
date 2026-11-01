@@ -23,6 +23,7 @@ import (
 	"spindle/internal/memory"
 	"spindle/internal/model"
 	"spindle/internal/source"
+	"spindle/internal/tui"
 )
 
 const usage = `usage: spin <command> [flags]
@@ -40,6 +41,7 @@ const usage = `usage: spin <command> [flags]
   index     print what a session here starts with: this project's index, global, the rest
   history   one memory's changes, who made them and the text before (--restore N puts one back)
   log       show memory activity across projects: recalls, saves, tool calls (-f to follow)
+  tui       browse memories in the terminal: projects, memories, each one's body, history and activity
   install   print the hook and MCP config for claude, codex or opencode, or the dream schedule (launchd)
   dream     run the consolidation pass now (--force ignores the 24 h / 5 sessions gate; --due sweeps, then runs every due project)
   extract   run extraction on one transcript now
@@ -95,6 +97,8 @@ func run(home, cmd string, args []string) error {
 		return runHistory(home, args)
 	case "log":
 		return runLog(home, args)
+	case "tui":
+		return runTUI(home, args)
 	case "install":
 		return runInstall(home, args)
 	case "dream":
@@ -619,4 +623,27 @@ func runHistory(home string, args []string) error {
 	}
 	fmt.Print(memory.FormatHistory(fs.Arg(0), hist, *full))
 	return nil
+}
+
+func runTUI(home string, args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	start := fs.String("project", "", "the project to open on (default: this folder's, else global)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin tui [--project P]\n\nA read-only viewer: ←/→ or tab move between panes, ↑/↓ or j/k move, b/h/a show the body, history or activity, / searches, r reloads, q quits.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	context := c.Context().Name
+	open := *start
+	if open == "" {
+		open = context
+	}
+	if open == "" {
+		open = memory.GlobalName
+	}
+	return tui.Run(home, memory.NameOf(open), context)
 }
