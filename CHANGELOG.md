@@ -1,5 +1,10 @@
 # Changelog
 
+## Viewer
+
+- New: `spin tui`, a read-only terminal viewer of every project's memories, with each memory's body, history and
+  activity, and search. It adds Bubble Tea and Lip Gloss as dependencies.
+
 ## OpenCode
 
 - `spin install opencode` prints a plugin for OpenCode 2 to save as `~/.config/opencode/plugins/spindle.js`, with
