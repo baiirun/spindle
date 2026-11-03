@@ -133,3 +133,61 @@ func TestSweepJustAddedSource(t *testing.T) {
 		t.Errorf("%d sweep events, want one first-sweep note", n)
 	}
 }
+
+// OpenCode joined the default sources after installs that already swept the
+// others. On such an install its first sweep reads none of the sessions the
+// plugin wrote before; later sweeps queue the ones that change, as OpenCode
+// jobs, and leave subagent sessions alone.
+func TestSweepOpenCodeJoinsExistingInstall(t *testing.T) {
+	p := project(t)
+	dir := t.TempDir()
+	now := t0.Add(24 * time.Hour)
+	writeJSON(marksPath(p.Home), map[string]*Mark{
+		source.ClaudeCode: {Swept: now.Add(-48 * time.Hour)},
+		source.Codex:      {Swept: now.Add(-48 * time.Hour)},
+	})
+	session := func(name, head string, d time.Duration) string {
+		path := filepath.Join(dir, name+".jsonl")
+		lines := head + "\n" + `{"type":"message","mid":"m1","role":"user","time":"2026-10-25T04:00:00Z","text":"Our deploys go through the pipeline called ship-it."}` + "\n"
+		os.WriteFile(path, []byte(lines), 0o644)
+		os.Chtimes(path, now.Add(d), now.Add(d))
+		return path
+	}
+	session("ses_old", `{"type":"session","agent":"opencode","id":"ses_old","cwd":"`+p.Cwd+`"}`, -30*time.Hour)
+	var opencode source.Spec
+	for _, s := range source.Defaults.Sources {
+		if s.Kind == source.OpenCode {
+			opencode = s
+		}
+	}
+	if opencode.Kind == "" || !opencode.Added.IsZero() {
+		t.Fatalf("defaults %+v", source.Defaults)
+	}
+	opencode.Dir = dir
+	src, _ := source.New(opencode)
+	srcs := []source.Source{src}
+	if err := Sweep(context.Background(), p.Home, srcs, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(pending(p.Home)) != 0 {
+		t.Fatal("OpenCode's first sweep queued history")
+	}
+
+	fresh := session("ses_new", `{"type":"session","agent":"opencode","id":"ses_new","cwd":"`+p.Cwd+`"}`, -30*time.Minute)
+	session("ses_task", `{"type":"session","agent":"opencode","id":"ses_task","cwd":"`+p.Cwd+`","parentID":"ses_new"}`, -30*time.Minute)
+	if err := Sweep(context.Background(), p.Home, srcs, now); err != nil {
+		t.Fatal(err)
+	}
+	jobs := pending(p.Home)
+	if len(jobs) != 1 {
+		t.Fatalf("%d jobs, want the new main session only", len(jobs))
+	}
+	var j Job
+	readJSON(jobs[0], &j)
+	if j.Transcript != fresh || j.Source != source.OpenCode || j.Agent != "opencode" || j.Session != "ses_new" || j.Cwd != p.Cwd {
+		t.Errorf("job %+v", j)
+	}
+	if m, _ := Marks(p.Home); m[source.OpenCode].Found != 2 || m[source.OpenCode].Queued != 1 {
+		t.Errorf("mark %+v", m[source.OpenCode])
+	}
+}

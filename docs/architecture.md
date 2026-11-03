@@ -124,8 +124,9 @@ is the transcript's path.
 |---|---|---|
 | `claude-code` | `*.jsonl` under `~/.claude/projects`, by modified time | `subagents/` folders |
 | `codex` | `*.jsonl` under `~/.codex/sessions`, by modified time | |
+| `opencode` | `*.jsonl` the plugin writes under `~/.spindle/opencode`, by modified time | subagent sessions, whose session line names a parent (left out on read) |
 
-`sources.json` lists the sources; without it, both are read. `memory.Client.AddSource` and `RemoveSource` (CLI
+`sources.json` lists the sources; without it, all three are read. `memory.Client.AddSource` and `RemoveSource` (CLI
 `spin sources add|rm`, MCP `memory_source`) rewrite it under `sources.lock`, and each entry records when it was
 added.
 
@@ -133,7 +134,8 @@ added.
 source's mark (in `sweeps.json`) and up to 10 minutes ago, so a session still going is left to its hooks. A
 session already read after its last change is passed over. The rest are read, and those with messages past their
 cursor are queued as jobs. The mark then moves up. A new source's first sweep only sets its mark: to when the entry was added, or to the
-sweep's own window for the defaults. An entry added after its old mark, say removed and added again, starts afresh
+sweep's own window for the defaults. So a default that is new to an install, as `opencode` was, reads no history
+either. An entry added after its old mark, say removed and added again, starts afresh
 the same way. A source that
 fails keeps its mark, so the next sweep tries the same window, and the others go on.
 

@@ -12,13 +12,17 @@
   opencode`: the start context goes in the system prompt, and picks go after the message they came with.
 - The plugin appends each session's messages to `~/.spindle/opencode/<session>.jsonl`, which extraction reads.
   Subagent sessions are skipped.
+- An `opencode` source sweeps that folder (`$SPINDLE_HOME/opencode` if set, or `--dir`), so the worker and the
+  hourly `spin dream --due` find OpenCode sessions the plugin wrote but no hook reported.
 - `scripts/check-opencode-api.sh [VERSION]` checks that OpenCode's published plugin API still has what the plugin
   uses.
 
 ## Sources
 
-- Sessions come from sources: `claude-code` and `codex` to start, listed in `~/.spindle/sources.json` (both when
-  the file is missing). Extraction and dreams read sessions through them.
+- Sessions come from sources: `claude-code`, `codex` and `opencode`, listed in `~/.spindle/sources.json` (all three
+  when the file is missing). With no `sources.json`, an existing install picks up `opencode` too, and its first
+  sweep reads none of the sessions already in the folder. With a `sources.json`, add it with `spin sources add
+  opencode`. Extraction and dreams read sessions through them.
 - Each worker run, and the hourly `spin dream --due`, sweeps the sources for sessions no hook reported once they
   have been quiet for 10 minutes. A new source's first sweep reads no history.
 - New: `spin sources` (`add KIND [--dir DIR]`, `rm KIND`), `memory_sources`, `memory_source`, and `sweep` events
