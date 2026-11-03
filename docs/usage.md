@@ -45,7 +45,8 @@ API and won't load it). It passes OpenCode's session hooks to `spin hook --agent
 into each model request: the start context in the system prompt, picks as a reminder after the message they came
 with. Picks aren't written into OpenCode's history, so after a restart a session no longer shows the ones it had.
 OpenCode keeps sessions in its database, so the plugin also appends each session's messages to `~/.spindle/opencode/`
-for extraction. Subagent sessions are skipped. The comment at the top of the file has the `mcp` entry to merge into
+for extraction, and the `opencode` source sweeps that folder for sessions the plugin wrote but no hook reported.
+Subagent sessions are skipped. The comment at the top of the file has the `mcp` entry to merge into
 `~/.config/opencode/opencode.json`. Stop rides on OpenCode's `experimental.idle` hook, which may change between
 releases; `scripts/check-opencode-api.sh` checks the plugin against the latest published API.
 
@@ -121,19 +122,20 @@ The MCP tools match the CLI: `memory_read`, `memory_write`, `memory_delete`, `me
 
 ## Sources
 
-Spindle learns from the sessions its sources list. Without a `sources.json` it reads the two local tools:
+Spindle learns from the sessions its sources list. Without a `sources.json` it reads the three local tools:
 
 ```json
-{"sources": [{"kind": "claude-code"}, {"kind": "codex"}]}
+{"sources": [{"kind": "claude-code"}, {"kind": "codex"}, {"kind": "opencode"}]}
 ```
 
 | Kind | Reads | Default folder |
 |---|---|---|
 | `claude-code` | Claude Code transcripts, leaving out `subagents/` folders | `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` if set) |
 | `codex` | Codex rollouts | `~/.codex/sessions` (`$CODEX_HOME/sessions` if set) |
+| `opencode` | The sessions the OpenCode plugin writes, leaving out subagent sessions | `~/.spindle/opencode` (`$SPINDLE_HOME/opencode` if set) |
 
 `spin sources add KIND [--dir DIR]` and `spin sources rm KIND` (or `memory_source`) change the list; editing the
-file by hand works too. The first change writes the defaults out, so removing `codex` leaves `claude-code`. A source
+file by hand works too. The first change writes the defaults out, so removing `codex` leaves `claude-code` and `opencode`. A source
 left out isn't swept, and with none, only hooks queue sessions. Hooks report a session within seconds of each turn. The sweep finds the
 sessions no hook reported, once they have been quiet for 10 minutes. A source starts from when it was added, so
 adding one never reads its whole history.

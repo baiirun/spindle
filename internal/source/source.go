@@ -1,6 +1,6 @@
 // Package source finds the sessions spindle learns from. A source is one
-// place sessions live: Claude Code's transcripts, Codex's, and later others
-// such as cloud sessions. Every source does the same two jobs: list the
+// place sessions live: Claude Code's transcripts, Codex's, the files the
+// OpenCode plugin writes, and later others such as cloud sessions. Every source does the same two jobs: list the
 // sessions that changed in a time window, and read one session's messages.
 // Which sources spindle reads is set in <SPINDLE_HOME>/sources.json.
 package source
@@ -23,7 +23,7 @@ import (
 // Ref names one session a source found.
 type Ref struct {
 	Source  string    // the source's kind
-	Agent   string    // the tool that wrote it, claude or codex; it picks the side models
+	Agent   string    // the tool that wrote it, claude, codex or opencode; it picks the side models
 	Loc     string    // where the source reads it again: for a local source, the transcript's path
 	Updated time.Time // when it last changed
 }
@@ -40,25 +40,28 @@ type Source interface {
 
 // Spec is one entry of sources.json.
 type Spec struct {
-	Kind  string    `json:"kind"`            // claude-code or codex
+	Kind  string    `json:"kind"`            // claude-code, codex or opencode
 	Dir   string    `json:"dir,omitempty"`   // where its transcripts live, if not the tool's default
 	Added time.Time `json:"added,omitempty"` // when it was added; sweeps start here, not in its history
 }
 
 // Kinds are the kinds New builds.
-var Kinds = []string{ClaudeCode, Codex}
+var Kinds = []string{ClaudeCode, Codex, OpenCode}
 
 // Config is sources.json.
 type Config struct {
 	Sources []Spec `json:"sources"`
 }
 
-// Defaults are read when sources.json doesn't exist: the two local tools.
-var Defaults = Config{Sources: []Spec{{Kind: ClaudeCode}, {Kind: Codex}}}
+// Defaults are read when sources.json doesn't exist: the local tools. A
+// default has no Added time, but the first sweep of any kind only sets its
+// mark, so a default that is new to an existing install reads no history.
+var Defaults = Config{Sources: []Spec{{Kind: ClaudeCode}, {Kind: Codex}, {Kind: OpenCode}}}
 
 const (
 	ClaudeCode = "claude-code"
 	Codex      = "codex"
+	OpenCode   = "opencode"
 )
 
 // ConfigPath is where the sources are listed.
@@ -114,6 +117,14 @@ func New(s Spec) (Source, error) {
 			dir = codexDir()
 		}
 		return Files{kind: Codex, agent: "codex", dir: expand(dir), added: s.Added}, nil
+	case OpenCode:
+		dir := s.Dir
+		if dir == "" {
+			dir = opencodeDir()
+		}
+		// The plugin writes subagent sessions beside the others; their
+		// session line names a parent, and the sweep skips them on read.
+		return Files{kind: OpenCode, agent: "opencode", dir: expand(dir), added: s.Added}, nil
 	}
 	return nil, fmt.Errorf("unknown source kind %q (known: %s)", s.Kind, strings.Join(Kinds, ", "))
 }
@@ -214,6 +225,15 @@ func codexDir() string {
 		return filepath.Join(d, "sessions")
 	}
 	return "~/.codex/sessions"
+}
+
+// opencodeDir is where the OpenCode plugin writes sessions: under
+// SPINDLE_HOME, as the plugin resolves it.
+func opencodeDir() string {
+	if d := os.Getenv("SPINDLE_HOME"); d != "" {
+		return filepath.Join(d, "opencode")
+	}
+	return "~/.spindle/opencode"
 }
 
 func expand(p string) string {
