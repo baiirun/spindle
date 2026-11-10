@@ -142,8 +142,9 @@ in place. Migration derives entry ids from what it migrates. Adoption records wh
 
 ### Each job runs on the model that suits it
 
-Background passes run Codex's small model first and fall back to Claude, through CLIs the user is already signed in
-to, so spindle has no keys of its own.
+Background work runs Codex first and falls back to Claude, through CLIs the user is already signed in to, so
+spindle has no keys of its own. Ingest and rollups are cheap, frequent and narrow, so they are one-shot calls to a
+small model with no tools. Dream is rare and needs judgment, so it is a session with tools on a larger setting.
 
 ### One core with several interfaces
 

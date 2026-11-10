@@ -29,7 +29,7 @@ internal/hooks    internal/memory.Client  ◄── spin index/log/search/zoom/r
 | `internal/hooks` | Turns one hook event into the index or a queued job. Prints install config and the OpenCode plugin. |
 | `internal/mcp` | A minimal stdio MCP server, and the memory tools as thin wrappers over `memory.Client`. |
 | `internal/memory` | Stores and projects, the four layers, ingest, the index, search and zoom, dream, the queue and worker, migration. |
-| `internal/model` | Side-model calls through the `claude` and `codex` CLIs, Codex first and Claude on failure. |
+| `internal/model` | Model calls through the `claude` and `codex` CLIs, Codex first and Claude on failure: one-shot completions for ingest and rollups, and agent sessions for dream. |
 | `internal/source` | The places sessions come from: lists sessions that changed, and reads one. |
 | `internal/transcript` | Reads Claude Code, Codex and OpenCode transcripts into user and assistant messages, each with its line. |
 | `internal/tui` | `spin tui`, the read-only viewer. |
@@ -195,8 +195,10 @@ dream's checkpoint starts after them, since the pages already reflect them.
 
 ## Models
 
-All side calls go through a CLI the user has already signed in to: `claude -p` with no tools, MCP servers,
-settings or saved session; `codex exec`, read-only and ephemeral, with an output schema.
+All model calls go through a CLI the user has already signed in to, so spindle has no keys of its own. Ingest and
+rollups are one-shot completions (`model.Model`): `claude -p` with no tools, MCP servers, settings or saved
+session, or `codex exec`, read-only and ephemeral, with an output schema. Dream is an agent session
+(`model.Agent`), confined as the table under Dream shows.
 
 | Role | First | Fallback |
 |---|---|---|

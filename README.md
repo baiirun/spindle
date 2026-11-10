@@ -2,8 +2,8 @@
 
 One long-term memory for Claude Code, Codex and OpenCode, shared across all of your projects. A side model notes
 what happens in each session as one-line gists in an append-only log, each pointing at what was said. Rollups
-summarize the log by session, day and week. A periodic dream turns new notes into rule topics, which every session
-loads, and wiki pages, one per entity. Each session starts with the rules and a timeline whose detail fades with
+summarize the log by session, day and week. A periodic dream, an agent session with tools, turns new notes into rule
+topics, which every session loads, and wiki pages, one per entity. Each session starts with the rules and a timeline whose detail fades with
 age. Everything runs through the tools' hooks and an MCP server, and is kept as plain files in `~/.spindle`.
 
     go build -o ~/go/bin/spin ./cmd/spin

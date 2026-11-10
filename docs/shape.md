@@ -56,8 +56,9 @@ break one, it updates this doc in the same PR and adds its reason to [design.md]
     `spin dream retire`, which work only while that store's dream runs. Pages changed any other way are recorded
     before and after the session. The checkpoint moves only after a session that finished, and only past the
     entries it read.
-21. **Side models run through the user's signed-in `claude` and `codex` CLIs,** Codex first, Claude on failure.
-    Tools, MCP servers, settings and saved sessions are off for these calls.
+21. **Every model runs through the user's signed-in `claude` and `codex` CLIs,** Codex first, Claude on failure.
+    Ingest and rollup calls have no tools, MCP servers, settings or saved sessions. A dream session has file
+    reads and its listed spin commands only, no network, and no MCP servers or settings.
 
 ### Interfaces
 

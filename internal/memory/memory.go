@@ -27,6 +27,7 @@
 //	  wiki/<slug>.md           one entity page
 //	  page-changes.jsonl       every rule and wiki change, with before and after
 //	  dream.json               how far dream has read the log
+//	  dream-session.json(l)    a running dream's session and its commands' outcomes
 //	  lock                     flock held by every writer of the store
 //	  memory/, changes.jsonl   spindle v1, read by MigrateV1 and never written
 //	activity.jsonl             what spindle did, for people reading along
