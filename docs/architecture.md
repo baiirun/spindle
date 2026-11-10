@@ -152,11 +152,12 @@ exits non-zero with the reason, so the agent can fix it and try again. Each outc
 
 | CLI | How it runs | What it may do |
 |---|---|---|
-| `codex exec` | `--sandbox workspace-write`, cwd the store, `--add-dir` the home, `approval_policy="never"`, ephemeral | read anywhere, write only under the home, no network |
+| `codex exec` | `--sandbox workspace-write`, `--ignore-user-config`, cwd the store, `--add-dir` the home, `approval_policy="never"`, ephemeral | read anywhere, write only under the home, no network, none of the user's MCP servers or hooks |
 | `claude -p` | `--tools Bash,Read,Grep,Glob`, `--allowedTools` the commands plus Read, Grep and Glob, `--permission-mode dontAsk`, `--add-dir` the home, source folders and project folders, no MCP servers or settings | read those folders, run only the listed commands |
 
 **After the session**, pages that changed without a command (Codex's sandbox can grant the home only as a whole)
-are recorded as `dream`, so every change stays in the history. The checkpoint moves only if the session finished,
+are recorded as `dream`, so every change stays in the history. The activity log and `spin dream` say which CLI
+and model finished the session. The checkpoint moves only if the session finished,
 and never in a dry run; a failed session keeps what it applied, and the next one sees those pages. `spin dream
 --dry-run` runs the session with the commands recording what they would write.
 
@@ -197,7 +198,8 @@ dream's checkpoint starts after them, since the pages already reflect them.
 
 All model calls go through a CLI the user has already signed in to, so spindle has no keys of its own. Ingest and
 rollups are one-shot completions (`model.Model`): `claude -p` with no tools, MCP servers, settings or saved
-session, or `codex exec`, read-only and ephemeral, with an output schema. Dream is an agent session
+session, or `codex exec`, read-only, ephemeral and without the user's `config.toml`, with an output schema. Every
+Codex call skips that file because its MCP servers run outside the sandbox and could write. Dream is an agent session
 (`model.Agent`), confined as the table under Dream shows.
 
 | Role | First | Fallback |

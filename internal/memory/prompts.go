@@ -80,6 +80,7 @@ The wiki holds facts, one page per entity:
 How to work:
 - Read the notes, then the pages they bear on (spin wiki show, or read rules/<slug>.md and wiki/<slug>.md in this folder).
 - When a claim matters and the note is unclear, open its source: a note's pointer is a transcript path and line you can read. For claims about the code, read the project's repo.
+- Edit a page only when the notes change what it says. Never reword a page that is already right; when nothing needs changing, change nothing.
 - When notes disagree, the newer wins: update the claim, and say in the reason what it replaced. Retire a page whose subject is gone or wrong.
 - Leave out what the project's CLAUDE.md or AGENTS.md already say, one-off requests, and chatter.
 - Cite the notes each edit rests on with --evidence. You may cite only the notes listed below or ones the page already cites.

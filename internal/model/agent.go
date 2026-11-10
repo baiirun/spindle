@@ -15,7 +15,14 @@ import (
 // done. Dream uses one where a single completion would have to guess what
 // to read.
 type Agent interface {
-	Run(ctx context.Context, s Session) (string, error)
+	Run(ctx context.Context, s Session) (Reply, error)
+}
+
+// Reply is how a session ended: its last message, and which CLI and model
+// wrote it, since a fallback may have finished what the first one started.
+type Reply struct {
+	Text string
+	By   string // "codex gpt-6-luna", "claude opus"
 }
 
 // Session is one agent run. The agent may read anything ReadDirs holds (Codex
@@ -59,7 +66,7 @@ func orDefault(s, d string) string {
 // is picked up, not repeated.
 type AgentFallback []Agent
 
-func (f AgentFallback) Run(ctx context.Context, s Session) (string, error) {
+func (f AgentFallback) Run(ctx context.Context, s Session) (Reply, error) {
 	var errs []error
 	for _, a := range f {
 		out, err := a.Run(ctx, s)
@@ -71,14 +78,14 @@ func (f AgentFallback) Run(ctx context.Context, s Session) (string, error) {
 			break
 		}
 	}
-	return "", errors.Join(errs...)
+	return Reply{}, errors.Join(errs...)
 }
 
 // ClaudeAgent runs `claude -p` with Read, Grep, Glob and the allowed
 // commands only, no MCP servers, no settings and no saved session.
 type ClaudeAgent struct{ Model string }
 
-func (c ClaudeAgent) Run(ctx context.Context, s Session) (string, error) {
+func (c ClaudeAgent) Run(ctx context.Context, s Session) (Reply, error) {
 	allowed := []string{"Read", "Grep", "Glob"}
 	for _, cmd := range s.Commands {
 		allowed = append(allowed, "Bash("+cmd+":*)")
@@ -91,24 +98,25 @@ func (c ClaudeAgent) Run(ctx context.Context, s Session) (string, error) {
 	}
 	out, err := runSession(ctx, s.Dir, "claude", args, s.Prompt)
 	if err != nil {
-		return "", err
+		return Reply{}, err
 	}
 	res, err := parseClaude(out)
 	if err != nil {
-		return "", err
+		return Reply{}, err
 	}
 	if res.IsError {
-		return "", fmt.Errorf("claude: %s", clip(res.Result, 300))
+		return Reply{}, fmt.Errorf("claude: %s", clip(res.Result, 300))
 	}
-	return strings.TrimSpace(res.Result), nil
+	return Reply{Text: strings.TrimSpace(res.Result), By: "claude " + c.Model}, nil
 }
 
-// CodexAgent runs `codex exec` in the workspace-write sandbox: it reads
-// anywhere, writes only Dir and WriteDirs, and has no network.
+// CodexAgent runs `codex exec` in the workspace-write sandbox, without the
+// user's config.toml (whose MCP servers would run outside the sandbox): it
+// reads anywhere, writes only Dir and WriteDirs, and has no network.
 type CodexAgent struct{ Model, Effort string }
 
-func (c CodexAgent) Run(ctx context.Context, s Session) (string, error) {
-	args := []string{"exec", "--ephemeral", "--skip-git-repo-check", "-C", s.Dir, "--sandbox", "workspace-write", "--json",
+func (c CodexAgent) Run(ctx context.Context, s Session) (Reply, error) {
+	args := []string{"exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "-C", s.Dir, "--sandbox", "workspace-write", "--json",
 		"--model", c.Model, "-c", fmt.Sprintf("model_reasoning_effort=%q", c.Effort), "-c", `approval_policy="never"`}
 	for _, d := range s.WriteDirs {
 		args = append(args, "--add-dir", d)
@@ -117,7 +125,7 @@ func (c CodexAgent) Run(ctx context.Context, s Session) (string, error) {
 	prompt := "<instructions>\n" + s.System + "\n</instructions>\n\nRun only these commands: " + strings.Join(s.Commands, "; ") + ".\n\n" + s.Prompt
 	out, err := runSession(ctx, s.Dir, "codex", args, prompt)
 	if err != nil {
-		return "", err
+		return Reply{}, err
 	}
 	var text string
 	for _, line := range bytes.Split(out, []byte("\n")) {
@@ -133,9 +141,9 @@ func (c CodexAgent) Run(ctx context.Context, s Session) (string, error) {
 		}
 	}
 	if text == "" {
-		return "", errors.New("codex: the session ended without a final message")
+		return Reply{}, errors.New("codex: the session ended without a final message")
 	}
-	return strings.TrimSpace(text), nil
+	return Reply{Text: strings.TrimSpace(text), By: "codex " + c.Model}, nil
 }
 
 // runSession runs an agent CLI with no deadline of its own: a dream session
@@ -153,6 +161,6 @@ func runSession(ctx context.Context, dir, bin string, args []string, stdin strin
 }
 
 // AgentFunc adapts a function, for tests.
-type AgentFunc func(ctx context.Context, s Session) (string, error)
+type AgentFunc func(ctx context.Context, s Session) (Reply, error)
 
-func (f AgentFunc) Run(ctx context.Context, s Session) (string, error) { return f(ctx, s) }
+func (f AgentFunc) Run(ctx context.Context, s Session) (Reply, error) { return f(ctx, s) }

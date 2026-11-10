@@ -457,7 +457,7 @@ EOF
 	os.WriteFile(filepath.Join(w.fakes, "session.sh"), []byte(script), 0o644)
 
 	out := w.spin(w.work, "", "dream", "--dry-run")
-	if !strings.Contains(out, "would write rules/git-and-prs: stated") || !strings.Contains(out, "rejected wiki/ghost") {
+	if !strings.Contains(out, "would write rules/git-and-prs: stated") || !strings.Contains(out, "rejected wiki/ghost") || !strings.Contains(out, "by codex") {
 		b, _ := os.ReadFile(filepath.Join(w.fakes, "session.out"))
 		t.Errorf("dry run output:\n%s\nsession:\n%s", out, b)
 	}

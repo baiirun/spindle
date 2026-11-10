@@ -103,7 +103,7 @@ func TestCodexCallIsReadOnlyAndEphemeral(t *testing.T) {
 		t.Fatalf("answer %q, %v", got, err)
 	}
 	a := args()
-	for _, want := range [][]string{{"exec"}, {"--ephemeral"}, {"--sandbox", "read-only"}, {"--json"}, {"--model", "gpt-6-luna"}, {"-c", `model_reasoning_effort="low"`}, {"--output-schema"}} {
+	for _, want := range [][]string{{"exec"}, {"--ephemeral"}, {"--ignore-user-config"}, {"--sandbox", "read-only"}, {"--json"}, {"--model", "gpt-6-luna"}, {"-c", `model_reasoning_effort="low"`}, {"--output-schema"}} {
 		if !hasArgs(a, want...) {
 			t.Errorf("codex args lack %q: %q", want, a)
 		}
@@ -174,7 +174,7 @@ func TestAgentSessionsAreLockedDown(t *testing.T) {
 	s := Session{Dir: t.TempDir(), System: "SYSTEM", Prompt: "TASK", Commands: []string{"/bin/spin dream write"}, ReadDirs: []string{"/transcripts"}, WriteDirs: []string{"/home"}}
 
 	args, stdin := standIn(t, "claude", `{"type":"result","result":"done","is_error":false}`, 0)
-	if got, err := (ClaudeAgent{Model: "opus"}).Run(context.Background(), s); err != nil || got != "done" {
+	if got, err := (ClaudeAgent{Model: "opus"}).Run(context.Background(), s); err != nil || got != (Reply{Text: "done", By: "claude opus"}) {
 		t.Fatalf("claude: %q, %v", got, err)
 	}
 	a := args()
@@ -189,11 +189,11 @@ func TestAgentSessionsAreLockedDown(t *testing.T) {
 	}
 
 	args, stdin = standIn(t, "codex", `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`, 0)
-	if got, err := (CodexAgent{Model: "m", Effort: "medium"}).Run(context.Background(), s); err != nil || got != "done" {
+	if got, err := (CodexAgent{Model: "m", Effort: "medium"}).Run(context.Background(), s); err != nil || got != (Reply{Text: "done", By: "codex m"}) {
 		t.Fatalf("codex: %q, %v", got, err)
 	}
 	a = args()
-	for _, want := range [][]string{{"--sandbox", "workspace-write"}, {"-c", `approval_policy="never"`}, {"--add-dir", "/home"}, {"-C", s.Dir}, {"--ephemeral"}} {
+	for _, want := range [][]string{{"--sandbox", "workspace-write"}, {"-c", `approval_policy="never"`}, {"--add-dir", "/home"}, {"-C", s.Dir}, {"--ephemeral"}, {"--ignore-user-config"}} {
 		if !hasArgs(a, want...) {
 			t.Errorf("codex args lack %q: %q", want, a)
 		}

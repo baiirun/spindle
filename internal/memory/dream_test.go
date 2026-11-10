@@ -87,7 +87,7 @@ func TestDream(t *testing.T) {
 	write := func(target string, title string, kind EntityKind, body string, evidence ...EntryID) (string, error) {
 		return ApplyDreamEdit(p.dreamSessionPath(), DreamEdit{Target: target, Title: title, Kind: kind, Body: body, Evidence: evidence, Reason: "from the notes"}, t0)
 	}
-	agent := model.AgentFunc(func(ctx context.Context, s model.Session) (string, error) {
+	agent := model.AgentFunc(func(ctx context.Context, s model.Session) (model.Reply, error) {
 		if !strings.Contains(s.Prompt, "e-2") || !strings.Contains(s.Prompt, "dream write --session") {
 			t.Errorf("task lacks the notes or the commands:\n%s", s.Prompt)
 		}
@@ -101,7 +101,7 @@ func TestDream(t *testing.T) {
 			t.Errorf("write: %v", err)
 		}
 		os.WriteFile(filepath.Join(p.Dir, "wiki", "stray.md"), []byte(WikiPage{Page: Page{Slug: "stray", Title: "Stray"}, Kind: KindConcept}.Render()), 0o644)
-		return "one rule, one page", nil
+		return model.Reply{Text: "one rule, one page", By: "fake"}, nil
 	})
 
 	dry, err := p.Dream(context.Background(), agent, "spin", DreamDryRun, t0)
@@ -123,6 +123,9 @@ func TestDream(t *testing.T) {
 	}
 	if len(res.Changes) != 2 || len(res.Rejected) != 1 || res.Rejected[0].Edit.Target.Slug != "ghost" {
 		t.Fatalf("changes %d, rejected %+v; want 2 applied and the ghost rejected", len(res.Changes), res.Rejected)
+	}
+	if res.By != "fake" {
+		t.Errorf("result by %q, want the agent that finished", res.By)
 	}
 	if len(res.Unrecorded) != 1 || res.Unrecorded[0].Target.Slug != "stray" || res.Unrecorded[0].By != ByDream {
 		t.Errorf("unrecorded %+v, want the stray page, by dream", res.Unrecorded)
@@ -155,9 +158,9 @@ func TestDream(t *testing.T) {
 
 	// A failed session keeps what it applied and leaves the checkpoint.
 	p.Append([]Entry{entry(t, "e-3", "s3", t0.Add(3*time.Hour), "The staging cluster is shared with QA.")})
-	failing := model.AgentFunc(func(ctx context.Context, s model.Session) (string, error) {
+	failing := model.AgentFunc(func(ctx context.Context, s model.Session) (model.Reply, error) {
 		write("wiki/staging", "Staging", KindTool, "Shared with QA.", "e-3")
-		return "", errors.New("the model gave up")
+		return model.Reply{}, errors.New("the model gave up")
 	})
 	if _, err := p.Dream(context.Background(), failing, "spin", DreamApply, t0.Add(4*time.Hour)); err == nil {
 		t.Fatal("a failed session: want an error")

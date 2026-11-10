@@ -157,12 +157,14 @@ func parseClaude(out []byte) (claudeResult, error) {
 	return res, nil
 }
 
-// Codex runs `codex exec` read-only and ephemeral.
+// Codex runs `codex exec` read-only and ephemeral, without the user's
+// config.toml: its MCP servers run outside the sandbox and could write, and
+// its hooks would fire inside spindle's own calls.
 type Codex struct{ Model, Effort string }
 
 func (c Codex) Complete(ctx context.Context, system, prompt, schema string) (string, error) {
 	dir := os.TempDir()
-	args := []string{"exec", "--ephemeral", "--skip-git-repo-check", "-C", dir, "--sandbox", "read-only", "--json",
+	args := []string{"exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "-C", dir, "--sandbox", "read-only", "--json",
 		"--model", c.Model, "-c", fmt.Sprintf("model_reasoning_effort=%q", c.Effort)}
 	if schema != "" {
 		f, err := os.CreateTemp("", "spindle-schema-*.json")

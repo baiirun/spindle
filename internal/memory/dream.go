@@ -280,6 +280,7 @@ func (p Project) dreamOutcomesPath() string { return filepath.Join(p.Dir, "dream
 type DreamResult struct {
 	Fresh      int      // entries it read
 	Summary    string   // the agent's last message
+	By         string   // the CLI and model that finished the session
 	Changes    []Change // edits applied through the commands
 	Planned    []Edit   // a dry run's edits
 	Rejected   []Rejection
@@ -319,6 +320,9 @@ func (p Project) Dream(ctx context.Context, agent model.Agent, spin string, mode
 	if len(res.Unrecorded) > 0 {
 		note += fmt.Sprintf(", %d changed without a command", len(res.Unrecorded))
 	}
+	if res.By != "" {
+		note += ", by " + res.By
+	}
 	p.Log(Event{At: now, Kind: "dream", Project: p.Name, Files: files, Ms: time.Since(began).Milliseconds(), Note: note + ". " + res.Summary, Err: errString(err)})
 	return res, err
 }
@@ -348,7 +352,7 @@ func (p Project) dream(ctx context.Context, agent model.Agent, spin string, mode
 	defer os.Remove(p.dreamSessionPath())
 	defer os.Remove(p.dreamOutcomesPath())
 
-	summary, runErr := agent.Run(ctx, model.Session{
+	reply, runErr := agent.Run(ctx, model.Session{
 		Dir:       p.Dir,
 		System:    dreamSystem,
 		Prompt:    dreamTask(in, spin, p.dreamSessionPath(), mode),
@@ -356,7 +360,7 @@ func (p Project) dream(ctx context.Context, agent model.Agent, spin string, mode
 		ReadDirs:  append([]string{p.Home}, append(sourceDirs(p.Home), in.Folders...)...),
 		WriteDirs: []string{p.Home},
 	})
-	res.Summary = oneLine(summary)
+	res.Summary, res.By = oneLine(reply.Text), reply.By
 	outcomes, err := readJSONL[dreamOutcome](p.dreamOutcomesPath())
 	if err != nil {
 		return res, err
@@ -528,6 +532,9 @@ func ApplyDreamEdit(sessionPath string, req DreamEdit, now time.Time) (string, e
 func FormatDream(r DreamResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d new entries. %s\n", r.Fresh, orDefault(r.Summary, "(no summary)"))
+	if r.By != "" {
+		fmt.Fprintf(&b, "  by %s\n", r.By)
+	}
 	for _, c := range r.Changes {
 		what := "wrote"
 		if c.After == "" {
