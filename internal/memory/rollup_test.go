@@ -6,27 +6,19 @@ import (
 	"time"
 )
 
-// rollAll gives every window in the timeline a fresh rollup, as if the
-// worker had caught up.
-func rollAll(t *testing.T, tl []Node, now time.Time) []Rollup {
+// rollAll summarizes every window of es bottom up, as the worker would
+// once all of them have closed, and returns the rollups.
+func rollAll(t *testing.T, es []Entry, now time.Time) []Rollup {
 	t.Helper()
-	var out []Rollup
-	var walk func(ns []Node)
-	walk = func(ns []Node) {
-		for _, n := range ns {
-			if len(n.Children) == 0 {
-				continue
-			}
-			walk(n.Children)
-			w, err := ParseWindow(n.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, Rollup{Window: w, Line: Gist("summary of " + n.ID), Inputs: n.Digest, Built: now})
+	var rs []Rollup
+	for range 4 { // sessions, days, weeks, then nothing is left
+		tl := Timeline(es, rs, time.UTC)
+		due := DueRollups(tl, now.Add(365*24*time.Hour), time.UTC)
+		for _, task := range due {
+			rs = append(rs, Rollup{Window: task.Window, Line: Gist("summary of " + task.Window.String()), Inputs: task.Node.Digest, Built: now})
 		}
 	}
-	walk(tl)
-	return out
+	return rs
 }
 
 func windows(tasks []RollupTask) []string {
@@ -40,7 +32,6 @@ func windows(tasks []RollupTask) []string {
 // What comes due, and when: closed windows whose children are all
 // summarized, children first.
 func TestDueRollups(t *testing.T) {
-	t.Skip("pending: Timeline, DueRollups")
 	loc := time.UTC
 	mon := time.Date(2026, 11, 9, 10, 0, 0, 0, loc) // a Monday, ISO week 46
 	es := []Entry{
@@ -64,14 +55,14 @@ func TestDueRollups(t *testing.T) {
 
 	// Once the session has its rollup, the closed day comes due; the week
 	// waits for the day.
-	rolled := Timeline(es, rollAll(t, tl, mon)[:1], loc) // only s:a
+	all := rollAll(t, es, mon)
+	rolled := Timeline(es, all[:1], loc) // the session's: rollAll writes it first
 	if got := windows(DueRollups(rolled, mon.Add(24*time.Hour), loc)); !slices.Equal(got, []string{"d:2026-11-09"}) {
 		t.Errorf("after the session's rollup: due %v, want the day", got)
 	}
 
 	// An entry added to a summarized session makes it, its day and its week
 	// stale, and they come due again bottom up.
-	all := rollAll(t, tl, mon)
 	later := append(es, entry(t, "e-3", "a", mon.Add(time.Hour), "three"))
 	stale := Timeline(later, all, loc)
 	if stale[0].Line != "" || stale[0].Children[0].Line != "" || stale[0].Children[0].Children[0].Line != "" {

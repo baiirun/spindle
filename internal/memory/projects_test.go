@@ -8,7 +8,6 @@ import (
 )
 
 func TestLinkFolderToProject(t *testing.T) {
-	t.Skip("pending: Adopt, which every link now calls")
 	t.Setenv(ProjectEnv, "")
 	home, dir := t.TempDir(), t.TempDir()
 	os.Mkdir(filepath.Join(dir, ".git"), 0o755)

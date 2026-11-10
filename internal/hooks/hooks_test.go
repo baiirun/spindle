@@ -49,7 +49,6 @@ func (e *env) run(t *testing.T, ev map[string]any) Output {
 }
 
 func TestSessionStart(t *testing.T) {
-	t.Skip("pending: Project.Index")
 	e := setup(t)
 	o := e.run(t, map[string]any{"hook_event_name": "SessionStart", "source": "startup", "session_id": "s"})
 	if o.HookSpecificOutput.HookEventName != "SessionStart" || !strings.Contains(o.HookSpecificOutput.AdditionalContext, "memory_append") {
@@ -104,9 +103,14 @@ func TestInstallOpencode(t *testing.T) {
 		t.Fatalf("binary not filled in:\n%s", out)
 	}
 	for _, s := range []string{`"hook", "--agent", "opencode"`, `"mcp", "--agent", "opencode"`,
-		`"SessionStart"`, `"UserPromptSubmit"`, `"PostToolUse"`, `"Stop"`, `"PreCompact"`} {
+		`"SessionStart"`, `"Stop"`, `"PreCompact"`} {
 		if !strings.Contains(out, s) {
 			t.Errorf("plugin lacks %s", s)
+		}
+	}
+	for _, s := range []string{`"UserPromptSubmit"`, `"PostToolUse"`} {
+		if strings.Contains(out, s) {
+			t.Errorf("plugin still sends %s; recall is gone", s)
 		}
 	}
 }

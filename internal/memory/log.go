@@ -1,12 +1,20 @@
 package memory
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// EntryID names one log entry: "e-" then a time-ordered, random suffix. Ids
-// are never reused, and nothing derives meaning from their characters.
+// EntryID names one log entry, "e-..." and never reused. NewEntryID makes
+// them time-ordered; MigrateV1 derives them from what it migrates, so a rerun
+// can tell what it already wrote. Nothing else reads meaning into them.
 type EntryID string
 
 // SourceKind is where an entry came from.
@@ -42,7 +50,14 @@ type Gist string
 // trims. It returns an error for an empty result or one over GistBytes; it
 // never clips, so a gist is never silently cut mid-thought.
 func ParseGist(s string) (Gist, error) {
-	panic("unimplemented")
+	g := oneLine(s)
+	if g == "" {
+		return "", errors.New("empty gist")
+	}
+	if len(g) > GistBytes {
+		return "", fmt.Errorf("gist is %d bytes, over %d: say it in one shorter line", len(g), GistBytes)
+	}
+	return Gist(g), nil
 }
 
 // Entry is one line of a store's log. The store is the file it is in, so it
@@ -59,10 +74,12 @@ type Entry struct {
 	Adopted EntryID `json:"adopted,omitempty"`
 }
 
-// NewEntryID returns a fresh id that sorts after every id made earlier on
-// this machine's clock.
+// NewEntryID returns a fresh id. Ids sort by the millisecond they were made
+// in; within one millisecond their order is random.
 func NewEntryID(now time.Time) EntryID {
-	panic("unimplemented")
+	var r [4]byte
+	_, _ = rand.Read(r[:])
+	return EntryID(fmt.Sprintf("e-%011x%s", now.UnixMilli(), hex.EncodeToString(r[:])))
 }
 
 func (p Project) logPath() string { return filepath.Join(p.Dir, "log.jsonl") }
@@ -76,7 +93,23 @@ func (p Project) logPath() string { return filepath.Join(p.Dir, "log.jsonl") }
 // final line.
 // Must not: rewrite or reorder existing lines.
 func (p Project) Append(entries []Entry) error {
-	panic("unimplemented")
+	if len(entries) == 0 {
+		return nil
+	}
+	for i, e := range entries {
+		if e.ID == "" || e.At.IsZero() || e.Gist == "" {
+			return fmt.Errorf("append to %s: entry %d has no id, time or gist", p.Name, i)
+		}
+	}
+	if err := p.Init(); err != nil {
+		return err
+	}
+	unlock, err := p.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return appendJSONL(p.logPath(), entries)
 }
 
 // Entries reads the store's log, oldest first. A missing log is empty.
@@ -85,5 +118,25 @@ func (p Project) Append(entries []Entry) error {
 // Ensures: any other line that doesn't parse is an error naming the store and
 // line number: the log is the source of truth, so damage is surfaced, not skipped.
 func (p Project) Entries() ([]Entry, error) {
-	panic("unimplemented")
+	if p.Name == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(p.logPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(b), "\n")
+	lines = lines[:len(lines)-1] // after the last newline: "" or a torn line
+	out := make([]Entry, 0, len(lines))
+	for i, line := range lines {
+		var e Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			return nil, fmt.Errorf("%s/log.jsonl line %d: %w", p.Name, i+1, err)
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }

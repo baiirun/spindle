@@ -8,7 +8,6 @@ import (
 // Rendering and parsing are inverse, so a page read, edited and written
 // back is the same page.
 func TestPageRoundTrip(t *testing.T) {
-	t.Skip("pending: Render, ParseWikiPage")
 	w := WikiPage{Page: Page{Slug: "deploy-pipeline", Title: "Deploy pipeline", Body: "Runs on GitHub Actions.\n\n---\nnot frontmatter: just text\n",
 		Evidence: []EntryID{"e-1", "e-2"}, Updated: t0}, Kind: KindTool}
 	got, err := ParseWikiPage("deploy-pipeline", w.Render())
@@ -23,7 +22,6 @@ func TestPageRoundTrip(t *testing.T) {
 // Applying the same edits twice records them once, so a dream rerun after a
 // crash converges.
 func TestApplyEditsTwiceRecordsOnce(t *testing.T) {
-	t.Skip("pending: ApplyEdits")
 	p := project(t)
 	page := WikiPage{Page: Page{Slug: "deploy-pipeline", Title: "Deploy pipeline", Body: "GitHub Actions.\n", Evidence: []EntryID{"e-1"}, Updated: t0}, Kind: KindTool}
 	edits := []Edit{{Target: PageRef{Layer: WikiLayer, Slug: "deploy-pipeline"}, After: page.Render(), Evidence: []EntryID{"e-1"}, Reason: "moved off Jenkins"}}

@@ -211,7 +211,15 @@ type ProjectInfo struct {
 
 // ProjectList describes global and every project.
 func (p Project) ProjectList() ([]ProjectInfo, error) {
-	panic("unimplemented")
+	all, err := stores(p.Home)
+	var out []ProjectInfo
+	for _, s := range all {
+		es, _ := s.Entries()
+		rules, _ := s.Rules()
+		wiki, _ := s.Wiki()
+		out = append(out, ProjectInfo{Meta: s.Meta(), Entries: len(es), Rules: len(rules), Pages: len(wiki), Context: s.Name == p.Name})
+	}
+	return out, err
 }
 
 func FormatProjects(ps []ProjectInfo) string {

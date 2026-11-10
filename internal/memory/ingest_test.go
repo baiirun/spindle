@@ -29,7 +29,6 @@ func gistsReply(line int) string {
 // A pass that appended and then died before moving its cursor must not
 // append the same gists again.
 func TestIngestRerunAfterCrash(t *testing.T) {
-	t.Skip("pending: Ingest")
 	p := project(t)
 	s := session(t, p, "Our deploys go through Buildkite, the pipeline is ship-it. And write Go tests table-driven.", "Noted.")
 	m := &replies{out: []string{gistsReply(s.Messages[0].Line)}}
@@ -55,7 +54,6 @@ func TestIngestRerunAfterCrash(t *testing.T) {
 // A failed model call appends nothing and keeps the cursor, so the next
 // pass reads the same messages.
 func TestIngestModelFailureKeepsCursor(t *testing.T) {
-	t.Skip("pending: Ingest")
 	p := project(t)
 	s := session(t, p, "We decided the log is the only source of truth for memory.", "Agreed.")
 	if _, err := Ingest(context.Background(), p, s, &replies{out: []string{"not json"}}, t0); err == nil {
@@ -72,7 +70,6 @@ func TestIngestModelFailureKeepsCursor(t *testing.T) {
 // Without a project, project-scoped gists wait in unfiled with their folder,
 // and linking the folder later brings them into the project exactly once.
 func TestUnfiledUntilLinked(t *testing.T) {
-	t.Skip("pending: Ingest, Adopt")
 	p := project(t)
 	folder := t.TempDir()
 	none := Project{Home: p.Home, Cwd: folder}
@@ -98,5 +95,9 @@ func TestUnfiledUntilLinked(t *testing.T) {
 	}
 	if u, _ := unfiled.Entries(); len(u) != 2 {
 		t.Errorf("unfiled has %d entries, want both still there", len(u))
+	}
+	corp, _ := LoadCorpus(p.Home)
+	if hits := Search(corp, "buildkite", nil, 10); len(hits) != 1 || hits[0].Store != "proj" {
+		t.Errorf("search found %+v, want only the adopted copy", hits)
 	}
 }

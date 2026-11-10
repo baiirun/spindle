@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"spindle/internal/hooks"
 	"spindle/internal/mcp"
 	"spindle/internal/memory"
+	"spindle/internal/model"
 	"spindle/internal/source"
 	"spindle/internal/tui"
 )
@@ -32,7 +34,7 @@ const usage = `usage: spin <command> [flags]
   rules     list, show, edit or show the history of rule topics
   wiki      show, edit or show the history of a wiki page
   rollup    write the rollups that are due now
-  dream     run dream now (--dry-run prints the plan; --due runs every store whose gate is open)
+  dream     run a dream session now (--dry-run records its edits without writing; --due runs every store whose gate is open)
   ingest    read new sessions from a source (claude-code, codex, opencode) or one transcript
   migrate   turn spindle v1 memories into the log, rules and wiki, leaving v1's files as they are
   projects  list every project with its folders and counts
@@ -194,10 +196,85 @@ func runIndex(home string, args []string) error {
 	return nil
 }
 
-// runLog prints log entries across stores, or with "append" adds one:
-// spin log [--store S] [--session ID] [-n N] [-f] | spin log append --gist G [--source NOTE] [--global].
+// runLog prints log entries across stores, or with "append" adds one.
 func runLog(home string, args []string) error {
-	panic("unimplemented")
+	if len(args) > 0 && args[0] == "append" {
+		fs := flag.NewFlagSet("log append", flag.ExitOnError)
+		dir := projectFlag(fs)
+		gist := fs.String("gist", "", "one line, at most 280 bytes")
+		from := fs.String("source", "", "where it came from: a doc, a URL, a meeting")
+		global := fs.Bool("global", false, "about you, or true in every project")
+		fs.Parse(args[1:])
+		if *gist == "" {
+			fmt.Fprintln(os.Stderr, "usage: spin log append --gist G [--source NOTE] [--global] [--project P]")
+			os.Exit(2)
+		}
+		c, err := client(home, *dir)
+		if err != nil {
+			return err
+		}
+		scope := memory.ScopeProject
+		if *global {
+			scope = memory.ScopeGlobal
+		}
+		msg, err := c.Append(*gist, scope, *from)
+		if err != nil {
+			return err
+		}
+		fmt.Println(msg)
+		return nil
+	}
+	fs := flag.NewFlagSet("log", flag.ExitOnError)
+	store := fs.String("store", "", "only this store (global, unfiled or a project)")
+	session := fs.String("session", "", "only this session (a prefix is enough)")
+	n := fs.Int("n", 50, "show the last n entries (0: all)")
+	follow := fs.Bool("f", false, "keep printing new entries")
+	asJSON := fs.Bool("json", false, "print raw JSON lines")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin log [--store S] [--session ID] [-n N] [-f] [--json] | spin log append --gist G [--source NOTE] [--global]")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	f := memory.EntryFilter{Store: *store, Session: *session, Last: *n}
+	print := func(es []memory.StoreEntry) {
+		for _, e := range es {
+			if *asJSON {
+				b, _ := json.Marshal(e)
+				fmt.Println(string(b))
+			} else {
+				fmt.Println(e.String())
+			}
+		}
+	}
+	es, err := c.Entries(f)
+	if err != nil {
+		return err
+	}
+	print(es)
+	seen := map[memory.EntryID]bool{}
+	for _, e := range es {
+		seen[e.ID] = true
+	}
+	for *follow {
+		time.Sleep(500 * time.Millisecond)
+		all, err := c.Entries(memory.EntryFilter{Store: *store, Session: *session})
+		if err != nil {
+			return err
+		}
+		var fresh []memory.StoreEntry
+		for _, e := range all {
+			if !seen[e.ID] {
+				seen[e.ID] = true
+				fresh = append(fresh, e)
+			}
+		}
+		print(fresh)
+	}
+	return nil
 }
 
 func runSearch(home string, args []string) error {
@@ -251,27 +328,349 @@ func runZoom(home string, args []string) error {
 	return nil
 }
 
-// runPages is spin rules and spin wiki:
-// list | show SLUG | edit SLUG [--reason WHY] (opens $EDITOR) | history SLUG, each with [--store S].
+// runPages is spin rules and spin wiki.
 func runPages(home string, layer memory.Layer, args []string) error {
-	panic("unimplemented")
+	name := string(layer)
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	store := fs.String("store", "", "the store (default: this folder's project, else global)")
+	reason := fs.String("reason", "", "edit, retire: why, for the change record")
+	full := fs.Bool("full", false, "history: include the text each change replaced")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: spin %[1]s [list] | spin %[1]s show|history SLUG | spin %[1]s edit|retire SLUG --reason WHY\n  edit opens $EDITOR; each takes --store S\n", name)
+		fs.PrintDefaults()
+	}
+	action, slug := "list", ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		action, args = args[0], args[1:]
+	}
+	if action != "list" {
+		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+			fs.Usage()
+			os.Exit(2)
+		}
+		slug, args = args[0], args[1:]
+	}
+	fs.Parse(args)
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	ref, err := memory.ParsePageRef(name + "/" + slug)
+	if action != "list" && err != nil {
+		return err
+	}
+	st, err := c.Store(*store)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case "list":
+		if layer == memory.RulesLayer && *store == "" {
+			out, err := c.RulesList()
+			fmt.Print(out)
+			return err
+		}
+		return listPages(st, layer)
+	case "show":
+		out, err := c.Zoom(st.Name + "/" + ref.String())
+		fmt.Print(out)
+		return err
+	case "history":
+		hist, err := c.History(st.Name, ref)
+		fmt.Print(memory.FormatHistory(ref, hist, *full))
+		return err
+	case "edit", "retire":
+		if strings.TrimSpace(*reason) == "" {
+			return fmt.Errorf("%s needs --reason, for the change record", action)
+		}
+		after := ""
+		if action == "edit" {
+			if after, err = editPage(st, ref); err != nil {
+				return err
+			}
+		}
+		ch, err := c.Edit(st.Name, memory.Edit{Target: ref, After: after, Reason: *reason})
+		if memory.IsNoChange(err) {
+			fmt.Println("Unchanged.")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Saved %s/%s (%s).\n", st.Name, ch.Target, ch.ID)
+		return nil
+	}
+	fs.Usage()
+	os.Exit(2)
+	return nil
 }
 
-// runRollup writes every due rollup now, as the worker does after ingest.
+func listPages(st memory.Project, layer memory.Layer) error {
+	if layer == memory.RulesLayer {
+		rules, err := st.Rules()
+		for _, r := range rules {
+			fmt.Printf("rules/%s  %s\n", r.Slug, r.Title)
+		}
+		return err
+	}
+	pages, err := st.Wiki()
+	for _, w := range pages {
+		fmt.Printf("wiki/%-28s %-8s %s\n", w.Slug, w.Kind, w.Title)
+	}
+	if len(pages) == 0 && err == nil {
+		fmt.Printf("%s has no wiki pages.\n", st.Name)
+	}
+	return err
+}
+
+// editPage opens the page (or a template for a new one) in $EDITOR and
+// returns the text saved. It loops while the text doesn't parse, so a typo
+// in the frontmatter isn't lost.
+func editPage(st memory.Project, ref memory.PageRef) (string, error) {
+	text, err := st.PageText(ref)
+	if err != nil {
+		return "", err
+	}
+	if text == "" {
+		page := memory.Page{Slug: ref.Slug, Title: string(ref.Slug), Body: "\n"}
+		if ref.Layer == memory.RulesLayer {
+			text = memory.Rule{Page: page}.Render()
+		} else {
+			text = memory.WikiPage{Page: page, Kind: memory.KindConcept}.Render()
+		}
+	}
+	f, err := os.CreateTemp("", string(ref.Slug)+"-*.md")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(text); err != nil {
+		return "", err
+	}
+	f.Close()
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	for {
+		cmd := exec.Command("sh", "-c", editor+` "$1"`, "sh", f.Name())
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("editor: %w", err)
+		}
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			return "", err
+		}
+		err = memory.CheckPageText(ref, string(b))
+		if err == nil {
+			return string(b), nil
+		}
+		fmt.Fprintf(os.Stderr, "%v\nPress Enter to edit again, or Ctrl-C to give up.\n", err)
+		fmt.Scanln()
+	}
+}
+
+// runRollup writes the rollups that are due now, as the worker does after
+// ingest; it is the worker without the sweep or dream.
 func runRollup(home string, args []string) error {
-	panic("unimplemented")
+	fs := flag.NewFlagSet("rollup", flag.ExitOnError)
+	fs.Parse(args)
+	_ = os.Setenv(memory.InnerEnv, "1")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoSweep: true, NoDream: true})
 }
 
-// runDream is spin dream [--project P] [--dry-run] [--force] | spin dream --due.
-// --dry-run prints the plan, rejected edits included, and writes nothing.
+// runDream is spin dream [--project P] [--dry-run] [--force] | spin dream --due,
+// and the commands a dream session runs: spin dream write|retire --session PATH ...
 func runDream(home string, args []string) error {
-	panic("unimplemented")
+	if len(args) > 0 && (args[0] == "write" || args[0] == "retire") {
+		return runDreamEdit(args[0], args[1:])
+	}
+	fs := flag.NewFlagSet("dream", flag.ExitOnError)
+	dir := projectFlag(fs)
+	dry := fs.Bool("dry-run", false, "run the session, but have its edits recorded instead of written")
+	force := fs.Bool("force", false, "run even if the gate is closed (5 sessions and 24 h since the last dream)")
+	due := fs.Bool("due", false, "sweep and ingest, then dream every store whose gate is open (what the schedule runs)")
+	fs.Parse(args)
+	_ = os.Setenv(memory.InnerEnv, "1")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	spin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	agent := model.AgentFor(model.Dream)
+	if *due {
+		if err := memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoDream: true}); err != nil {
+			fmt.Println("worker:", err)
+		}
+		if n := memory.DreamDueStores(ctx, home, agent, spin, time.Now(), os.Stdout); n == 0 {
+			fmt.Println("nothing due")
+		}
+		return nil
+	}
+	c, err := client(home, "")
+	if err != nil {
+		return err
+	}
+	st, err := c.Store(*dir)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if !*force && !*dry {
+		cp, err := st.LoadCheckpoint()
+		if err != nil {
+			return err
+		}
+		es, err := st.Entries()
+		if err != nil {
+			return err
+		}
+		if !memory.DreamDue(cp, es, now) {
+			return fmt.Errorf("%s isn't due: it dreams after %d sessions and %s; --force runs it anyway, --dry-run shows what it would do", st.Name, memory.DreamMinSessions, memory.DreamEvery)
+		}
+	}
+	mode := memory.DreamApply
+	if *dry {
+		mode = memory.DreamDryRun
+	}
+	res, err := st.Dream(ctx, agent, spin, mode, now)
+	fmt.Printf("%s:\n%s", st.Name, memory.FormatDream(res))
+	return err
+}
+
+// runDreamEdit is spin dream write|retire --session PATH TARGET ..., the only
+// way a dream session changes a page.
+func runDreamEdit(action string, args []string) error {
+	fs := flag.NewFlagSet("dream "+action, flag.ExitOnError)
+	session := fs.String("session", "", "the dream session file, given in the dream's task")
+	title := fs.String("title", "", "write: the page's title")
+	kind := fs.String("kind", "", "write, wiki: person, project, link, tool, concept or org")
+	evidence := fs.String("evidence", "", "comma-separated ids of the notes the edit rests on")
+	reason := fs.String("reason", "", "one line on why")
+	body := fs.String("body", "", "write: the whole new body (default: stdin)")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: spin dream %s --session PATH rules/SLUG|wiki/SLUG [--title T] [--kind K] --evidence IDS --reason WHY [--body B | < body.md]\n", action)
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if fs.NArg() > 1 { // flags after the target
+		target := fs.Arg(0)
+		fs.Parse(fs.Args()[1:])
+		fs.Parse(append([]string{target}, fs.Args()...))
+	}
+	if fs.NArg() != 1 || *session == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	e := memory.DreamEdit{Target: fs.Arg(0), Title: *title, Kind: memory.EntityKind(*kind), Reason: *reason, Retire: action == "retire"}
+	for _, id := range strings.Split(*evidence, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			e.Evidence = append(e.Evidence, memory.EntryID(id))
+		}
+	}
+	if action == "write" {
+		e.Body = *body
+		if e.Body == "" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			e.Body = string(b)
+		}
+		if strings.TrimSpace(e.Body) == "" {
+			return fmt.Errorf("write needs a body, on stdin or with --body")
+		}
+	}
+	msg, err := memory.ApplyDreamEdit(*session, e, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Println(msg)
+	return nil
 }
 
 // runIngest is spin ingest SOURCE [--since TIME] (queues every session the
 // source changed since then, then runs the worker) | spin ingest FILE.jsonl.
+// Cursors keep either from reading a message twice.
 func runIngest(home string, args []string) error {
-	panic("unimplemented")
+	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
+	since := fs.String("since", "24h", "SOURCE: sessions changed since a time (RFC 3339), a date (2026-11-01) or a duration ago (48h)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: spin ingest SOURCE [--since T] | spin ingest FILE.jsonl\nsources: "+strings.Join(source.Kinds, ", "))
+		fs.PrintDefaults()
+	}
+	if len(args) == 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	target := args[0]
+	fs.Parse(args[1:])
+	_ = os.Setenv(memory.InnerEnv, "1")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if strings.HasSuffix(target, ".jsonl") {
+		path, err := filepath.Abs(target)
+		if err != nil {
+			return err
+		}
+		s, err := source.Read(ctx, path)
+		if err != nil {
+			return err
+		}
+		if err := memory.Enqueue(home, memory.Job{Agent: s.Agent, Session: s.ID, Transcript: path, Cwd: s.Cwd}); err != nil {
+			return err
+		}
+		return memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoSweep: true, NoDream: true})
+	}
+	from, err := parseSince(*since, time.Now())
+	if err != nil {
+		return err
+	}
+	srcs, err := source.Load(home)
+	if err != nil {
+		return err
+	}
+	for _, src := range srcs {
+		if src.Kind() != target {
+			continue
+		}
+		refs, err := src.List(ctx, from, time.Now())
+		if err != nil {
+			return err
+		}
+		queued := 0
+		for _, r := range refs {
+			s, err := src.Read(ctx, r.Loc)
+			if err != nil || s.Subagent {
+				continue
+			}
+			if err := memory.Enqueue(home, memory.Job{Agent: r.Agent, Source: target, Session: s.ID, Transcript: r.Loc, Cwd: s.Cwd}); err != nil {
+				return err
+			}
+			queued++
+		}
+		fmt.Printf("%s: %d sessions changed since %s, queued\n", target, queued, from.Local().Format(time.RFC3339))
+		return memory.Work(ctx, home, memory.WorkerOptions{Log: os.Stdout, NoSweep: true, NoDream: true})
+	}
+	return fmt.Errorf("no source %q in %s; spin sources lists them", target, source.ConfigPath(home))
+}
+
+// parseSince reads an RFC 3339 time, a date in the local zone, or a duration ago.
+func parseSince(s string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return now.Add(-d), nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.ParseInLocation(time.DateOnly, s, time.Local); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("--since %q: want a time (2026-11-01T09:00:00Z), a date (2026-11-01) or a duration (48h)", s)
 }
 
 func runMigrate(home string, args []string) error {

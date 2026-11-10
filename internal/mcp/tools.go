@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"spindle/internal/memory"
@@ -106,7 +107,7 @@ func MemoryTools(c memory.Client) []Tool {
 		},
 		{
 			Name:        "memory_projects",
-			Description: "List every project with its description, folders and how many memories it has. * marks this folder's project.",
+			Description: "List every project with its description, folders and how many entries, rules and pages it has. * marks this folder's project.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				ps, err := c.Projects()
@@ -119,7 +120,7 @@ func MemoryTools(c memory.Client) []Tool {
 		{
 			Name: "memory_project",
 			Description: "Create or describe a project, or link this folder to it so sessions here start in it. " +
-				"Folders only hint at a project; every project's memories stay visible everywhere.",
+				"Linking adopts what was noted here before, while the folder had no project. Every project stays searchable from everywhere.",
 			InputSchema: schema(`{"type":"object","properties":{
 "name":{"type":"string","description":"short kebab-case project name"},
 "description":{"type":"string","description":"one line on what the project is about"},
@@ -145,7 +146,20 @@ func MemoryTools(c memory.Client) []Tool {
 
 // parseRollupArgs reads rollup_read's window name and time.
 func parseRollupArgs(window, at string) (memory.WindowKind, time.Time, error) {
-	panic("unimplemented")
+	kind, ok := map[string]memory.WindowKind{"session": memory.SessionWindow, "day": memory.DayWindow, "week": memory.WeekWindow}[window]
+	if !ok {
+		return "", time.Time{}, fmt.Errorf("window %q: want session, day or week", window)
+	}
+	if at == "" {
+		return kind, time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, at); err == nil {
+		return kind, t, nil
+	}
+	if t, err := time.ParseInLocation(time.DateOnly, at, time.Local); err == nil {
+		return kind, t, nil
+	}
+	return "", time.Time{}, fmt.Errorf("at %q: want a date (2026-11-08) or an RFC 3339 time", at)
 }
 
 func schema(s string) json.RawMessage {

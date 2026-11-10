@@ -37,7 +37,6 @@ func snapshot(t *testing.T, dir string) map[string]string {
 // migration converges: a rerun adds nothing, a rerun after a lost page
 // restores just that page.
 func TestMigrateV1(t *testing.T) {
-	t.Skip("pending: MigrateV1")
 	p := project(t)
 	g := Store(p.Home, GlobalName)
 	g.Init()

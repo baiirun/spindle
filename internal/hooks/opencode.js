@@ -8,21 +8,14 @@
 // each event to `spin hook --agent opencode` in the shape Claude Code's hooks
 // use, and puts the context that comes back where the model reads it.
 //
-//   session "context"           SessionStart: the start context goes in the system prompt of every request;
-//                               PostToolUse: late picks are collected before each request
-//   session "prompt"            UserPromptSubmit
-//   session "compaction"        PreCompact; the next request starts over as after a compaction
+//   session "context"           SessionStart: the index goes in the system prompt of every request
+//   session "compaction"        PreCompact; the next request gets a fresh index
 //   session "experimental.idle" Stop
-//
-// Picks are not written into OpenCode's history: a synthetic message would
-// start another turn. Each pick is kept beside the message it came with and
-// put back after that message in every request, so the request prefix stays
-// the same from one call to the next.
 //
 // OpenCode keeps sessions in its database and hands plugins only the window
 // since the last compaction, so the plugin writes each session's user and
 // assistant messages to <SPINDLE_HOME>/opencode/<session>.jsonl for
-// extraction. It only appends, one line per message, so a line never moves.
+// ingest. It only appends, one line per message, so a line never moves.
 // Subagent sessions are left alone.
 //
 // Undo: delete this file and the "spindle" entry under "mcp".
@@ -45,7 +38,7 @@ export default {
     const state = (id) => {
       let s = sessions.get(id)
       if (!s) {
-        s = { start: undefined, compacted: false, picks: new Map(), info: undefined, written: undefined, queue: Promise.resolve("") }
+        s = { start: undefined, compacted: false, info: undefined, written: undefined, queue: Promise.resolve("") }
         sessions.set(id, s)
       }
       return s
@@ -127,26 +120,6 @@ export default {
         s.start ??= hook("SessionStart", id, { source: s.compacted ? "compact" : "startup" })
         const start = await s.start
         if (start) event.system.push({ type: "text", text: start })
-        const late = await hook("PostToolUse", id)
-        const anchor = event.messages.findLast((m) => m.id)?.id
-        if (late && anchor) s.picks.set(anchor, [s.picks.get(anchor), reminder(late)].filter(Boolean).join("\n\n"))
-        for (let i = event.messages.length - 1; i >= 0; i--) {
-          const text = s.picks.get(event.messages[i].id)
-          if (!text) continue
-          let at = i + 1
-          while (event.messages[at]?.role === "tool") at++ // a tool call's results must follow it
-          event.messages.splice(at, 0, userMessage(event.messages, text))
-        }
-      } catch {}
-    })
-
-    await ctx.session.hook("prompt", async (event) => {
-      try {
-        const id = event.sessionID
-        const prompt = (event.prompt.text ?? "").trim()
-        if (!prompt || (await subagent(id))) return
-        const text = await hook("UserPromptSubmit", id, { prompt, transcript_path: await transcript(id) })
-        if (text) state(id).picks.set(event.messageID, reminder(text))
       } catch {}
     })
 
@@ -158,7 +131,6 @@ export default {
         const s = state(id)
         s.start = undefined
         s.compacted = true
-        s.picks.clear()
       } catch {}
     })
 
@@ -172,16 +144,6 @@ export default {
       } catch {}
     })
   },
-}
-
-const reminder = (text) => "<system-reminder>\n" + text + "\n</system-reminder>"
-
-// userMessage builds a user message of the same class as the request's own
-// messages, since the plugin can't import OpenCode's.
-function userMessage(messages, text) {
-  const value = { role: "user", content: [{ type: "text", text }] }
-  const Message = messages.find((m) => m && m.constructor !== Object)?.constructor
-  return Message ? new Message(value) : value
 }
 
 // iso reads a message time, which may arrive as millis, a DateTime or a string.

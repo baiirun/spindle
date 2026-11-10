@@ -10,7 +10,6 @@ import (
 
 // Gists are checked once, at the boundary, and never clipped.
 func TestParseGist(t *testing.T) {
-	t.Skip("pending: ParseGist")
 	exactly := strings.Repeat("é", GistBytes/2) // 2 bytes each: exactly GistBytes
 	for _, c := range []struct {
 		in, want string
@@ -32,7 +31,6 @@ func TestParseGist(t *testing.T) {
 // The log is the truth: a crash's torn tail is tolerated, damage anywhere
 // else is reported rather than skipped.
 func TestEntriesTornTailAndCorruption(t *testing.T) {
-	t.Skip("pending: Append, Entries")
 	p := project(t)
 	if err := p.Append([]Entry{entry(t, "e-1", "s", t0, "first"), entry(t, "e-2", "s", t0, "second")}); err != nil {
 		t.Fatal(err)
@@ -55,7 +53,6 @@ func TestEntriesTornTailAndCorruption(t *testing.T) {
 // Concurrent appenders (the worker, an MCP call, the CLI) lose nothing and
 // never interleave inside a batch.
 func TestAppendKeepsBatchesWhole(t *testing.T) {
-	t.Skip("pending: Append, Entries")
 	p := project(t)
 	var wg sync.WaitGroup
 	for w := range 8 {

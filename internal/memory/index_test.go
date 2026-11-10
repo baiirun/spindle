@@ -20,7 +20,7 @@ func history(t *testing.T, n int, start time.Time) []Entry {
 func size(lines []TimelineLine) int {
 	n := 0
 	for _, l := range lines {
-		n += len(l.ID) + len(l.Text) + 2
+		n += len(l.ID) + len(l.Text) + 2 // "<id> <text>\n"
 	}
 	return n
 }
@@ -28,10 +28,8 @@ func size(lines []TimelineLine) int {
 // The OptMem shape: within budget, the newest entries word for word, the
 // oldest history as week lines, nothing shown twice.
 func TestFitTimelineDecaysWithAge(t *testing.T) {
-	t.Skip("pending: Timeline, FitTimeline")
 	es := history(t, 2000, t0) // about 12 weeks
-	tl := Timeline(es, nil, time.UTC)
-	tl = Timeline(es, rollAll(t, tl, t0), time.UTC)
+	tl := Timeline(es, rollAll(t, es, t0), time.UTC)
 	const budget = 6000
 	lines := FitTimeline(tl, budget)
 	if size(lines) > budget {
@@ -55,7 +53,6 @@ func TestFitTimelineDecaysWithAge(t *testing.T) {
 // With no rollups at all (a new install, a side model that is down), the
 // index still works: it shows entries, newest kept, and says what it left out.
 func TestFitTimelineWithoutRollups(t *testing.T) {
-	t.Skip("pending: Timeline, FitTimeline")
 	tl := Timeline(history(t, 500, t0), nil, time.UTC)
 	const budget = 3000
 	lines := FitTimeline(tl, budget)
@@ -77,7 +74,6 @@ func TestFitTimelineWithoutRollups(t *testing.T) {
 
 // The index is capped for any input, and every rule topic is named in it.
 func TestRenderIndexCap(t *testing.T) {
-	t.Skip("pending: RenderIndex")
 	var rules []Rule
 	for i := range 12 { // about 12 KB: far past RulesBytes
 		rules = append(rules, Rule{Page{Slug: Slug(fmt.Sprintf("topic-%02d", i)), Title: "Topic", Body: strings.Repeat("- do the thing carefully\n", 40)}})
