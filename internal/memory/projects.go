@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -13,12 +12,17 @@ import (
 
 // Projects are named by meaning, not by repository: "spindle", "eldspire",
 // "taxes". One may be linked to any number of folders, and a folder hints at
-// the project a session is in. Nothing is bound to the hint: recall and search
-// cover every project, and the hint only decides where a new memory goes by
-// default and which index a session starts with.
+// the project a session is in. Nothing is bound to the hint: search and zoom
+// cover every project, and the hint only decides where new entries go and
+// which store's rules and timeline a session starts with.
 
 // GlobalName is the store loaded in every project.
 const GlobalName = "global"
+
+// UnfiledName is the store for what ingest learns in folders with no
+// project. It is never loaded at session start or dreamed; linking a folder
+// adopts its entries into the project (see Adopt).
+const UnfiledName = "unfiled"
 
 var errNoProject = errors.New("this folder isn't linked to a project: name one (an existing project, or a new name to create it)")
 
@@ -30,12 +34,12 @@ type Meta struct {
 	Created     time.Time `json:"created"`
 }
 
-// Store is the store with this name ("global" or a project), which may not
-// exist yet.
+// Store is the store with this name ("global", "unfiled" or a project),
+// which may not exist yet.
 func Store(home, name string) Project {
 	name = NameOf(name)
-	if name == GlobalName {
-		return Project{Name: name, Dir: filepath.Join(home, GlobalName), Home: home}
+	if name == GlobalName || name == UnfiledName {
+		return Project{Name: name, Dir: filepath.Join(home, name), Home: home}
 	}
 	if name == "" {
 		return Project{Home: home}
@@ -44,6 +48,7 @@ func Store(home, name string) Project {
 }
 
 func (p Project) IsGlobal() bool   { return p.Name == GlobalName }
+func (p Project) IsUnfiled() bool  { return p.Name == UnfiledName }
 func (p Project) metaPath() string { return filepath.Join(p.Dir, "project.json") }
 
 // Exists reports whether the store has been created.
@@ -112,9 +117,6 @@ func (p Project) Unlink(dir string) error {
 
 // Projects lists the named projects (not global), by name.
 func Projects(home string) ([]Project, error) {
-	if err := migrate(home); err != nil {
-		return nil, err
-	}
 	dirs, err := filepath.Glob(filepath.Join(home, "projects", "*", "project.json"))
 	if err != nil {
 		return nil, err
@@ -201,19 +203,15 @@ func gitRoot(dir string) string {
 // ProjectInfo is one line of the project list.
 type ProjectInfo struct {
 	Meta
-	Memories int
-	Context  bool // the session's project
+	Entries int  // log entries
+	Rules   int  // rule topics
+	Pages   int  // wiki pages
+	Context bool // the session's project
 }
 
 // ProjectList describes global and every project.
 func (p Project) ProjectList() ([]ProjectInfo, error) {
-	all, err := stores(p.Home)
-	var out []ProjectInfo
-	for _, s := range all {
-		mems, _ := s.Load()
-		out = append(out, ProjectInfo{Meta: s.Meta(), Memories: len(mems), Context: s.Name == p.Name})
-	}
-	return out, err
+	panic("unimplemented")
 }
 
 func FormatProjects(ps []ProjectInfo) string {
@@ -227,7 +225,7 @@ func FormatProjects(ps []ProjectInfo) string {
 		if p.Name == GlobalName {
 			desc = "loaded in every project"
 		}
-		fmt.Fprintf(&b, "%s %-16s %3d  %s\n", mark, p.Name, p.Memories, orDash(desc))
+		fmt.Fprintf(&b, "%s %-16s %4d entries %2d rules %3d pages  %s\n", mark, p.Name, p.Entries, p.Rules, p.Pages, orDash(desc))
 		for _, f := range p.Folders {
 			fmt.Fprintf(&b, "  %-16s      %s\n", "", f)
 		}
@@ -240,99 +238,4 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-// --- migration from stores keyed by repository root ---
-
-var oldSlug = regexp.MustCompile(`^(.+)-[0-9a-f]{8}$`)
-
-// migrate renames the stores of earlier versions, projects/<base>-<hash>
-// with project.json {"root": ...}, to projects/<base> linked to that root,
-// and moves their per-store logs and cursors to the home.
-func migrate(home string) error {
-	dirs, _ := filepath.Glob(filepath.Join(home, "projects", "*-*"))
-	var old []string
-	for _, d := range dirs {
-		var meta struct{ Root, Name string }
-		if oldSlug.MatchString(filepath.Base(d)) && readJSON(filepath.Join(d, "project.json"), &meta) == nil && meta.Root != "" && meta.Name == "" {
-			old = append(old, d)
-		}
-	}
-	if len(old) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		return err
-	}
-	unlock, err := lockFile(filepath.Join(home, "migrate.lock"), true)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	for _, d := range old {
-		if err := migrateOne(home, d); err != nil {
-			return fmt.Errorf("migrate %s: %w", d, err)
-		}
-	}
-	return nil
-}
-
-func migrateOne(home, dir string) error {
-	var meta struct {
-		Root    string    `json:"root"`
-		Name    string    `json:"name"`
-		Created time.Time `json:"created"`
-	}
-	if err := readJSON(filepath.Join(dir, "project.json"), &meta); err != nil || meta.Root == "" || meta.Name != "" {
-		return err // another process got here first
-	}
-	base := NameOf(oldSlug.FindStringSubmatch(filepath.Base(dir))[1])
-	if base == "" || base == GlobalName {
-		base = "project"
-	}
-	name := base
-	for i := 2; ; i++ {
-		if _, err := os.Stat(filepath.Join(home, "projects", name)); os.IsNotExist(err) {
-			break
-		}
-		name = fmt.Sprintf("%s-%d", base, i)
-	}
-	// Cursors move to the home; the dream gate stays with the store.
-	var st struct {
-		Cursors map[string]*Cursor `json:"cursors"`
-	}
-	_ = readJSON(filepath.Join(dir, "state.json"), &st)
-	if len(st.Cursors) > 0 {
-		if err := updateCursors(home, func(c map[string]*Cursor) {
-			for path, cur := range st.Cursors {
-				if have := c[path]; have == nil || have.Line < cur.Line {
-					c[path] = cur
-				}
-			}
-		}); err != nil {
-			return err
-		}
-	}
-	if evs, _ := readJSONL[Event](filepath.Join(dir, "events.jsonl")); len(evs) > 0 {
-		have, _ := readJSONL[Event](filepath.Join(home, "events.jsonl"))
-		for i := range evs {
-			evs[i].Project = name
-		}
-		all := append(evs, have...)
-		sort.SliceStable(all, func(i, j int) bool { return all[i].At.Before(all[j].At) })
-		tmp := filepath.Join(home, "events.jsonl.migrate")
-		os.Remove(tmp)
-		if err := appendJSONL(tmp, all); err != nil {
-			return err
-		}
-		if err := os.Rename(tmp, filepath.Join(home, "events.jsonl")); err != nil {
-			return err
-		}
-		os.Remove(filepath.Join(dir, "events.jsonl"))
-	}
-	os.RemoveAll(filepath.Join(dir, "recall"))
-	if err := writeJSON(filepath.Join(dir, "project.json"), Meta{Name: name, Folders: []string{meta.Root}, Created: meta.Created}); err != nil {
-		return err
-	}
-	return os.Rename(dir, filepath.Join(home, "projects", name))
 }

@@ -122,7 +122,7 @@ func TestFallbackWhenCodexIsMissing(t *testing.T) {
 	standIn(t, "claude", `{"type":"result","result":"","structured_output":{"ok":true}}`, 0)
 	t.Setenv("PATH", filepath.Dir(lookPath(t, "claude")))
 	t.Setenv(BackendEnv, "")
-	got, err := For("claude", Extract).Complete(context.Background(), "s", "p", `{}`)
+	got, err := For(Ingest).Complete(context.Background(), "s", "p", `{}`)
 	if err != nil || got != `{"ok":true}` {
 		t.Fatalf("got %q, %v", got, err)
 	}

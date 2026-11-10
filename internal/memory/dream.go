@@ -2,206 +2,100 @@ package memory
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"spindle/internal/model"
-	"spindle/internal/source"
-	"spindle/internal/transcript"
 )
 
-// Dreaming is Claude Code's auto_dream: at most once a day, after enough
-// sessions, a pass over all of a project's memories that merges duplicates,
-// fixes what recent sessions contradicted, and prunes. Neither tool has a
-// scheduled hook, so the worker checks the gate after each drain.
+// Dream is one pass over one store: it reads the log entries since its
+// checkpoint, the rollups over them and the store's pages, and edits rules
+// and wiki pages. Planning and applying are separate steps, so a dry run is
+// a plan that is printed and never applied.
 
+// The gate: a store is due when this many distinct sessions have added
+// entries since its checkpoint and its last dream is this old.
 const (
-	DreamEvery    = 24 * time.Hour
-	DreamSessions = 5
-	dreamSignal   = 120_000 // characters of recent messages given to the dream
+	DreamMinSessions = 5
+	DreamEvery       = 24 * time.Hour
 )
+
+// Checkpoint is dream.json: how far dream has read the store's log. Only
+// ApplyDream writes it, under the store's dream.lock.
+type Checkpoint struct {
+	Read int       `json:"read"` // entries read, a prefix of the log
+	Last EntryID   `json:"last"` // the id of entry Read-1, to catch a log that changed under it
+	At   time.Time `json:"at"`   // when that dream ran; zero for never
+}
 
 // DreamDue reports whether the gate is open.
-func DreamDue(s State, now time.Time) bool {
-	return len(s.Sessions) >= DreamSessions && (s.LastDream.IsZero() || now.Sub(s.LastDream) >= DreamEvery)
+//
+// Requires: cp.Read <= len(entries).
+func DreamDue(cp Checkpoint, entries []Entry, now time.Time) bool {
+	panic("unimplemented")
 }
 
-// DreamResult says what a dream did.
-type DreamResult struct {
-	Result
-	Summary string
+// DreamInput is everything a dream reads. It is plain data, so planning can
+// be run, inspected and tested without the store.
+type DreamInput struct {
+	Store        string // the store's name, for the prompt
+	Fresh        []Entry
+	Rollups      []Rollup // those over the days the fresh entries fall in
+	Rules        []Rule
+	Wiki         []WikiPage
+	Instructions string // CLAUDE.md and AGENTS.md from the project's first linked folder
+	Through      Checkpoint
 }
 
-// ErrDreaming means another dream is running for the store.
-var ErrDreaming = errors.New("a dream is already running for this project")
-
-// Dream runs one pass over one store and resets its gate. One dream runs at
-// a time per store.
-func Dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
-	if err := p.Init(); err != nil {
-		return DreamResult{}, err
-	}
-	unlock, err := lockFile(filepath.Join(p.Dir, "dream.lock"), false)
-	if err == errLocked {
-		return DreamResult{}, ErrDreaming
-	}
-	if err != nil {
-		return DreamResult{}, err
-	}
-	defer unlock()
-	start := time.Now()
-	res, err := dream(ctx, p, m, now)
-	p.Log(Event{Kind: "dream", Files: res.Changed, Ms: time.Since(start).Milliseconds(), Note: res.Summary, Err: errString(err)})
-	return res, err
+// LoadDreamInput gathers a store's DreamInput.
+//
+// Ensures: an error if the checkpoint's Last isn't the id at Read-1, since
+// the log then isn't the one dream read.
+func (p Project) LoadDreamInput(now time.Time) (DreamInput, error) {
+	panic("unimplemented")
 }
 
-func dream(ctx context.Context, p Project, m model.Model, now time.Time) (DreamResult, error) {
-	var res DreamResult
-	if err := p.Init(); err != nil {
-		return res, err
-	}
-	state, err := p.LoadState()
-	if err != nil {
-		return res, err
-	}
-	mems, err := p.Load()
-	if err != nil {
-		return res, err
-	}
-	var b strings.Builder
-	b.WriteString("## Memory files\n\n")
-	if len(mems) == 0 {
-		b.WriteString("(none)\n")
-	}
-	for _, mem := range mems {
-		fmt.Fprintf(&b, "<file name=%q modified=%q>\n%s</file>\n\n", mem.File(), mem.Modified.UTC().Format(time.RFC3339), mem.Render())
-	}
-	b.WriteString("## Instruction files\n\n")
-	found := false
-	var folder string
-	if fs := p.Meta().Folders; len(fs) > 0 {
-		folder = fs[0]
-	}
-	for _, name := range []string{"CLAUDE.md", "AGENTS.md", filepath.Join(".claude", "CLAUDE.md")} {
-		if folder == "" {
-			break
-		}
-		if text, err := os.ReadFile(filepath.Join(folder, name)); err == nil {
-			found = true
-			fmt.Fprintf(&b, "<file name=%q>\n%s\n</file>\n\n", name, clipRunes(string(text), 20_000))
-		}
-	}
-	if !found {
-		b.WriteString("(none)\n\n")
-	}
-	if p.IsGlobal() {
-		b.WriteString(globalSize(p))
-	}
-	fmt.Fprintf(&b, "## Messages from the %d sessions since the last dream\n\n%s", len(state.Sessions), recentSignal(ctx, state, dreamSignal))
-
-	var out struct {
-		Ops     []Op   `json:"ops"`
-		Summary string `json:"summary"`
-	}
-	if err := completeJSON(ctx, m, dreamSystem, b.String(), dreamSchema, &out); err != nil {
-		return res, fmt.Errorf("dream: %w", err)
-	}
-	unlock, err := p.Lock()
-	if err != nil {
-		return res, err
-	}
-	defer unlock()
-	// The dream sees one store, so its names are bare. A name prefixed with
-	// another store points outside what it saw; skip it rather than strip it.
-	var ops []Op
-	skipped := 0
-	for _, o := range out.Ops {
-		store, name := splitRef(o.Name)
-		if store != "" && store != p.Name {
-			skipped++
-			continue
-		}
-		o.Name = name
-		ops = append(ops, o)
-	}
-	if res.Result, err = p.Apply(ops, "dream", "", now); err != nil {
-		return res, err
-	}
-	res.Skipped += skipped
-	res.Summary = out.Summary
-	seen := state.Sessions
-	if state, err = p.LoadState(); err != nil {
-		return res, err
-	}
-	// Clear only the sessions this dream read; ones marked while it waited on
-	// the model count toward the next dream.
-	for id := range seen {
-		delete(state.Sessions, id)
-	}
-	state.LastDream = now.UTC()
-	if err := p.SaveState(state); err != nil {
-		return res, err
-	}
-	return res, appendJSONL(filepath.Join(p.Dir, "dreams.jsonl"), []map[string]any{{"at": now.UTC(), "summary": out.Summary, "written": res.Written, "deleted": res.Deleted}})
+// Rejection is an edit the plan dropped, and why.
+type Rejection struct {
+	Edit Edit
+	Why  string
 }
 
-// globalSize tells the global dream how much room global's index has at
-// session start, so that it keeps global small enough to load whole.
-func globalSize(g Project) string {
-	room := GlobalRoom()
-	sec := indexSection(g, "", GlobalShare)
-	n := sec.cost(sec.items)
-	text := fmt.Sprintf("## Size\n\nThe global index is loaded at the start of every session in every project, in about %d characters. It is now %d characters.", room, n)
-	if n > room {
-		text += " That is over: merge overlapping memories and shorten descriptions until it fits. Lines past the limit are left out of session start, newest directives kept first."
-	} else {
-		text += " Keep it within that."
-	}
-	return text + "\n\n"
+// DreamPlan is what a dream would do.
+type DreamPlan struct {
+	Edits    []Edit
+	Rejected []Rejection
+	Summary  string
+	Through  Checkpoint // the checkpoint to write once the edits are applied
 }
 
-// recentSignal renders the messages since the last dream, newest sessions
-// first, within n characters.
-func recentSignal(ctx context.Context, s State, n int) string {
-	type sess struct {
-		id   string
-		msgs []transcript.Message
-	}
-	var all []sess
-	for id, loc := range s.Sessions {
-		t, err := source.Read(ctx, loc)
-		if err != nil {
-			continue
-		}
-		var msgs []transcript.Message
-		for _, m := range t.Messages {
-			if m.Time.After(s.LastDream) {
-				msgs = append(msgs, m)
-			}
-		}
-		if len(msgs) > 0 {
-			all = append(all, sess{id, msgs})
-		}
-	}
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].msgs[len(all[i].msgs)-1].Time.After(all[j].msgs[len(all[j].msgs)-1].Time)
-	})
-	var b strings.Builder
-	for _, x := range all {
-		block := fmt.Sprintf("### Session %s\n\n%s", x.id, transcript.Render(x.msgs, 2_000))
-		if b.Len()+len(block) > n {
-			left := n - b.Len()
-			if left < 2_000 {
-				break
-			}
-			block = "…" + block[len(block)-left:] // keep the session's latest messages
-		}
-		b.WriteString(block)
-	}
-	return orNone(b.String())
+// PlanDream asks the side model for edits and checks them with CheckEdits.
+// The model reads every rule, then the wiki as slugs and titles, and asks
+// for the pages it needs in full before it writes.
+//
+// Ensures: an error only when the model fails or its reply isn't the schema;
+// bad individual edits become Rejections.
+// Must not: touch the store. It has no way to: it gets data, not a Project.
+func PlanDream(ctx context.Context, m model.Model, in DreamInput) (DreamPlan, error) {
+	panic("unimplemented")
+}
+
+// CheckEdits splits proposed edits into those to apply and those to reject.
+//
+// An edit is rejected when its Reason is empty; its After doesn't parse as a
+// page of its layer; it creates a page that exists or retires or changes one
+// that doesn't; it cites an entry that is neither in in.Fresh nor already
+// cited by its page.
+func CheckEdits(in DreamInput, edits []Edit) (ok []Edit, rejected []Rejection) {
+	panic("unimplemented")
+}
+
+// Dream loads, plans and applies one dream under the store's dream.lock. A
+// dry run calls LoadDreamInput and PlanDream itself and stops there.
+//
+// Ensures: returns errLocked, doing nothing, if another dream holds dream.lock.
+// Ensures: the checkpoint moves to plan.Through only after every edit is
+// written. A crash before that reruns the same entries, and ApplyEdits skips
+// what is already there.
+func (p Project) Dream(ctx context.Context, m model.Model, now time.Time) (DreamPlan, []Change, error) {
+	panic("unimplemented")
 }

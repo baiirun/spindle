@@ -3,105 +3,105 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"time"
 
 	"spindle/internal/memory"
 )
 
-// MemoryTools are the main agent's way into memory. They replace Claude
-// Code's file tools on its memory folder, so the same instructions work in
-// Codex, whose sandbox may not reach ~/.spindle. Each tool is a thin wrapper
+// MemoryTools are the main agent's way into memory. Each is a thin wrapper
 // over memory.Client, as the CLI's commands are; the client's caller names
-// the agent in the activity log, and startDream starts a dream of the
-// session's project in the background.
-func MemoryTools(c memory.Client, startDream func() error) []Tool {
+// the agent in the activity log. Agents only append: no tool here changes
+// rules or the wiki.
+func MemoryTools(c memory.Client) []Tool {
 	return []Tool{
 		{
-			Name:        "memory_read",
-			Description: "Read one memory file in full, by name as listed: <project>/<name>, like global/role.",
-			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a struct{ Name string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				m, err := c.Read(a.Name)
-				if err != nil {
-					return "", err
-				}
-				return memory.FormatMemory(m), nil
-			},
-		},
-		{
-			Name: "memory_write",
-			Description: "Create or replace a memory. Writing an existing name replaces the whole file, so give the full body. " +
-				"type: user | directive | project | reference. description: one specific line, used to decide relevance later. " +
-				"It goes to this folder's project unless project says otherwise (type user: global).",
+			Name: "memory_append",
+			Description: "Note one thing worth remembering, as it happens: a decision and its reason, a fact the user taught you, " +
+				"something that went wrong and why. One line, at most 280 bytes. Don't repeat what the index already shows.",
 			InputSchema: schema(`{"type":"object","properties":{
-"name":{"type":"string","description":"short kebab-case slug"},
-"type":{"type":"string","enum":["user","directive","project","reference"]},
-"project":{"type":"string","description":"global (who the user is, rules for everywhere), another project the fact is about, or a new short name to create one. Default: this folder's project; global for type user"},
-"project_description":{"type":"string","description":"one line on what a new project is about"},
-"description":{"type":"string"},
-"body":{"type":"string","description":"for directive and project: the rule or fact, then **Why:** and **How to apply:** lines"}},
-"required":["name","type","description","body"]}`),
+"gist":{"type":"string","description":"one line, at most 280 bytes"},
+"scope":{"type":"string","enum":["project","global"],"description":"global: about the user, or true in every project. Default: this folder's project"},
+"source":{"type":"string","description":"where it came from, if not this conversation: a doc, a URL, a meeting"}},
+"required":["gist"]}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var o memory.Op
-				if err := json.Unmarshal(raw, &o); err != nil {
-					return "", err
+				var a struct {
+					Gist   string
+					Scope  memory.Scope
+					Source string
 				}
-				return c.Write(o)
-			},
-		},
-		{
-			Name:        "memory_delete",
-			Description: "Delete a memory that is wrong, outdated or that the user asked to forget.",
-			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"},"reason":{"type":"string"}},"required":["name","reason"]}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a struct{ Name, Reason string }
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				return c.Delete(a.Name, a.Reason)
+				return c.Append(a.Gist, a.Scope, a.Source)
 			},
 		},
 		{
 			Name:        "memory_search",
-			Description: "Search every project's memory files (names, descriptions and bodies) for words. Use it for memories the index doesn't list or to check before writing.",
-			InputSchema: schema(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}`),
+			Description: "Search rules, wiki pages and rollups in every project by words. Each hit comes with the log entries behind it.",
+			InputSchema: schema(`{"type":"object","properties":{
+"query":{"type":"string"},
+"layers":{"type":"array","items":{"type":"string","enum":["rules","wiki","rollups","log"]},"description":"default: all"}},
+"required":["query"]}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
-					Query string
-					Limit int
+					Query  string
+					Layers []memory.SearchLayer
 				}
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				hits, total, err := c.Search(a.Query, a.Limit)
-				if err != nil {
-					return "", err
-				}
-				return memory.FormatSearch(hits, total), nil
+				return c.Search(a.Query, a.Layers, 10)
 			},
 		},
 		{
-			Name:        "memory_index",
-			Description: "The memory index as it is now: this folder's project, global, and a line per other project.",
-			InputSchema: schema(`{"type":"object","properties":{}}`),
+			Name:        "memory_zoom",
+			Description: "Open an id from the memory index: a week, day or session (w:2026-W45, d:2026-11-08, s:...) into its parts, or an entry (e-...) into its gist and where it was said.",
+			InputSchema: schema(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				return c.Index(), nil
+				var a struct{ ID string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				return c.Zoom(a.ID)
 			},
 		},
 		{
-			Name:        "memory_status",
-			Description: "This folder's project: how many memories by type, when it was last consolidated, its folders; and counts for the rest.",
+			Name:        "wiki_read",
+			Description: "Read one wiki page (a person, project, link, tool, concept or org) with the log entries it rests on.",
+			InputSchema: schema(`{"type":"object","properties":{"slug":{"type":"string"}},"required":["slug"]}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Slug string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				return c.WikiRead(a.Slug)
+			},
+		},
+		{
+			Name:        "rules_list",
+			Description: "The rules a session here loads, in full: global's and this folder's project's.",
 			InputSchema: schema(`{"type":"object","properties":{}}`),
 			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				s, err := c.Status()
+				return c.RulesList()
+			},
+		},
+		{
+			Name:        "rollup_read",
+			Description: "The summary of a session, day or week, with its parts.",
+			InputSchema: schema(`{"type":"object","properties":{
+"window":{"type":"string","enum":["session","day","week"]},
+"at":{"type":"string","description":"a date or RFC 3339 time inside the window; default: now"}},
+"required":["window"]}`),
+			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct{ Window, At string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				kind, at, err := parseRollupArgs(a.Window, a.At)
 				if err != nil {
 					return "", err
 				}
-				return memory.FormatStatus(s), nil
+				return c.RollupRead(kind, at)
 			},
 		},
 		{
@@ -140,99 +140,12 @@ func MemoryTools(c memory.Client, startDream func() error) []Tool {
 				return c.SetProject(a.Name, a.Description, link, "")
 			},
 		},
-		{
-			Name:        "memory_sources",
-			Description: "Where memory finds sessions to learn from (Claude Code, Codex, ...), and when each was last swept. For when the user asks why a session wasn't picked up.",
-			InputSchema: schema(`{"type":"object","properties":{}}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				return c.Sources()
-			},
-		},
-		{
-			Name: "memory_source",
-			Description: "Add or remove a place memory finds sessions to learn from. A source added starts with the sessions that change from now on. " +
-				"Removing one stops sweeping it and keeps its memories. Only when the user asks.",
-			InputSchema: schema(`{"type":"object","properties":{
-"action":{"type":"string","enum":["add","remove"]},
-"kind":{"type":"string","enum":["claude-code","codex"]},
-"dir":{"type":"string","description":"add: the folder it reads, if not the tool's default"}},
-"required":["action","kind"]}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a struct{ Action, Kind, Dir string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				switch a.Action {
-				case "add":
-					return c.AddSource(a.Kind, a.Dir)
-				case "remove":
-					return c.RemoveSource(a.Kind)
-				}
-				return "", errors.New(`action must be "add" or "remove"`)
-			},
-		},
-		{
-			Name: "memory_dream",
-			Description: "Start consolidating this folder's project's memory now: merge duplicates, fix what recent sessions contradicted, prune. " +
-				"It runs in the background for a few minutes; check memory_log for the result. Only when the user asks.",
-			InputSchema: schema(`{"type":"object","properties":{}}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				if startDream == nil {
-					return "", errors.New("dreaming is not available here")
-				}
-				if err := startDream(); err != nil {
-					return "", err
-				}
-				return "Dream started. It takes a few minutes; memory_log shows when it finishes and what it changed.", nil
-			},
-		},
-		{
-			Name: "memory_log",
-			Description: "What memory has been doing, across projects: session starts, which memories were recalled for which messages, " +
-				"saves, deletes, skipped passes and dreams. For when the user asks about memory itself.",
-			InputSchema: schema(`{"type":"object","properties":{
-"session":{"type":"string","description":"only this session (a prefix is enough)"},
-"kind":{"type":"string","enum":["start","select","recall","skip","call","extract","sweep","dream"]},
-"project":{"type":"string","description":"only sessions in this project"},
-"limit":{"type":"integer","description":"last n events, default 30"}}}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a struct {
-					Session, Kind, Project string
-					Limit                  int
-				}
-				if len(raw) > 0 {
-					if err := json.Unmarshal(raw, &a); err != nil {
-						return "", err
-					}
-				}
-				if a.Limit <= 0 {
-					a.Limit = 30
-				}
-				evs, err := c.Activity(memory.LogFilter{Session: a.Session, Kind: a.Kind, Project: a.Project, Last: a.Limit})
-				if err != nil {
-					return "", err
-				}
-				return memory.FormatEvents(evs), nil
-			},
-		},
-		{
-			Name: "memory_history",
-			Description: "Every change to one memory, newest first: when, by whom (agent, cli, extract, dream), why, and the text before it. " +
-				"Old versions are superseded; never treat them as current. For when the user asks how a memory changed.",
-			InputSchema: schema(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`),
-			Call: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var a struct{ Name string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				hist, err := c.History(a.Name)
-				if err != nil {
-					return "", err
-				}
-				return memory.FormatHistory(a.Name, hist, true), nil
-			},
-		},
 	}
+}
+
+// parseRollupArgs reads rollup_read's window name and time.
+func parseRollupArgs(window, at string) (memory.WindowKind, time.Time, error) {
+	panic("unimplemented")
 }
 
 func schema(s string) json.RawMessage {

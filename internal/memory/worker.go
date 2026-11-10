@@ -15,7 +15,7 @@ import (
 	"spindle/internal/source"
 )
 
-// Job asks the worker to run extraction for one session. Hooks write one at
+// Job asks the worker to ingest one session. Hooks write one at
 // the end of each turn, and a sweep of the sources writes them for sessions
 // no hook reported. Every model call happens in the worker, so a hook never
 // waits.
@@ -48,14 +48,14 @@ func pending(home string) []string {
 	return paths
 }
 
-// Models picks the model for a role given the agent that queued the work.
-type Models func(agent string, role model.Role) model.Model
+// Models picks the model for a role.
+type Models func(role model.Role) model.Model
 
 // WorkerOptions configures a worker run.
 type WorkerOptions struct {
 	Models  Models
 	Log     io.Writer
-	NoDream bool
+	NoDream bool // skip the dream gate check; rollups still run
 	NoSweep bool
 	Now     func() time.Time
 	// Sources are swept before the queue is drained; nil reads sources.json.
@@ -73,7 +73,7 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 		o.Now = time.Now
 	}
 	if o.Models == nil {
-		o.Models = func(agent string, role model.Role) model.Model { return model.For(agent, role) }
+		o.Models = model.For
 	}
 	if o.Sources == nil {
 		o.Sources = func() ([]source.Source, error) { return source.Load(home) }
@@ -102,55 +102,14 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 	}
 }
 
+// drain ingests every queued job, then writes the rollups that came due
+// and dreams the stores whose gate is open.
+//
+// Ensures: several jobs for one transcript make one Ingest pass.
+// Ensures: a failed job is logged and its cursor stays, so the next Stop
+// or sweep retries it; it doesn't stop the other jobs.
 func drain(ctx context.Context, home string, o WorkerOptions) error {
-	agent := ""
-	for {
-		paths := pending(home)
-		if len(paths) == 0 {
-			break
-		}
-		// Many Stops for one transcript are one pass.
-		jobs := map[string]Job{}
-		var order []string
-		for _, path := range paths {
-			var j Job
-			if err := readJSON(path, &j); err == nil && j.Transcript != "" {
-				if j.Cwd == "" {
-					j.Cwd = j.Root
-				}
-				if _, ok := jobs[j.Transcript]; !ok {
-					order = append(order, j.Transcript)
-				}
-				jobs[j.Transcript] = j
-			}
-			os.Remove(path)
-		}
-		for _, tp := range order {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			j := jobs[tp]
-			agent = j.Agent
-			p, err := jobContext(home, j)
-			if err != nil {
-				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
-				continue
-			}
-			res, err := Extract(ctx, p, tp, o.Models(j.Agent, model.Extract), o.Now())
-			switch {
-			case err != nil:
-				// The cursor did not move, so the next Stop retries.
-				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
-			case res.Skip == "":
-				fmt.Fprintf(o.Log, "%s extract %s %s: %d written, %d deleted, %d skipped\n", stamp(o.Now()), orDash(p.Name), filepath.Base(tp), res.Written, res.Deleted, res.Result.Skipped)
-			}
-		}
-	}
-	if o.NoDream || agent == "" {
-		return nil
-	}
-	DreamDueStores(ctx, home, o.Models(agent, model.Dream), o.Now(), o.Log)
-	return nil
+	panic("unimplemented")
 }
 
 func sweep(ctx context.Context, home string, o WorkerOptions) {
@@ -164,29 +123,21 @@ func sweep(ctx context.Context, home string, o WorkerOptions) {
 	}
 }
 
+// RollUp writes every due rollup in every store, a round at a time until
+// none is due (at most three rounds: sessions, days, weeks).
+//
+// Requires: the caller holds worker.lock, the rollups' only writer.
+// Ensures: a failed Summarize is logged and leaves that window due; the
+// rest still run. It returns how many rollups it wrote.
+func RollUp(ctx context.Context, home string, m model.Model, now time.Time, loc *time.Location, log io.Writer) int {
+	panic("unimplemented")
+}
+
 // DreamDueStores dreams every store whose gate is open. The scheduled run
 // (spin dream --due) and the worker after each drain both call it; the gate
 // and the dream lock keep them from doubling up. It returns how many ran.
 func DreamDueStores(ctx context.Context, home string, m model.Model, now time.Time, log io.Writer) int {
-	n := 0
-	all, _ := stores(home)
-	for _, s := range all {
-		if ctx.Err() != nil {
-			break
-		}
-		state, err := s.LoadState()
-		if err != nil || !DreamDue(state, now) {
-			continue
-		}
-		n++
-		res, err := Dream(ctx, s, m, now)
-		if err != nil {
-			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), s.Name, err)
-			continue
-		}
-		fmt.Fprintf(log, "%s dream %s: %d written, %d deleted. %s\n", stamp(now), s.Name, res.Written, res.Deleted, res.Summary)
-	}
-	return n
+	panic("unimplemented")
 }
 
 // jobContext is the session context a job was queued in.

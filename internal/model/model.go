@@ -25,37 +25,30 @@ type Model interface {
 type Role string
 
 const (
-	Select  Role = "select"
-	Extract Role = "extract"
-	Dream   Role = "dream"
+	Ingest Role = "ingest" // gists from a session's new messages
+	Rollup Role = "rollup" // one line over a window's children
+	Dream  Role = "dream"  // rule and wiki edits
 )
 
 // Env overrides. SPINDLE_BACKEND is claude or codex; SPINDLE_MODEL_<ROLE>
-// (SELECT, EXTRACT, DREAM) names the model.
+// (INGEST, ROLLUP, DREAM) names the model.
 const BackendEnv = "SPINDLE_BACKEND"
 
-// Defaults per backend. Claude Code's own memory uses Sonnet to select and
-// the main model to extract. Through the CLI, Sonnet 5.5 starts
-// about as fast as Haiku 5.5 (3.0 s against 2.6 s for a one-word reply).
-// Codex's memory uses its small model at low effort to extract and more
-// effort to consolidate.
+// Defaults per backend. Codex's memory uses its small model at low effort
+// to write per-session summaries and more effort to consolidate; ingest and
+// rollups are the former, dream the latter.
 var defaults = map[string]map[Role]string{
-	"claude": {Select: "sonnet", Extract: "sonnet", Dream: "opus"},
-	"codex":  {Select: "gpt-6-luna", Extract: "gpt-6-luna", Dream: "gpt-6-luna"},
+	"claude": {Ingest: "sonnet", Rollup: "sonnet", Dream: "opus"},
+	"codex":  {Ingest: "gpt-6-luna", Rollup: "gpt-6-luna", Dream: "gpt-6-luna"},
 }
 
-// For returns the model for a role. Extraction and dreaming run in the
-// background, so they use Codex first and fall back to Claude when Codex is
-// missing or its call fails. Selection holds up the user's message, so it
-// uses the agent whose hook started it. SPINDLE_BACKEND pins one backend for
-// every role.
-func For(agent string, role Role) Model {
+// For returns the model for a role. Every role runs in the background, so
+// each uses Codex first and falls back to Claude when Codex is missing or its
+// call fails. SPINDLE_BACKEND pins one backend for every role.
+func For(role Role) Model {
 	override := strings.TrimSpace(os.Getenv("SPINDLE_MODEL_" + strings.ToUpper(string(role))))
 	if b := strings.TrimSpace(os.Getenv(BackendEnv)); b != "" {
 		return backend(b, role, override)
-	}
-	if role == Select {
-		return backend(agent, role, override)
 	}
 	// SPINDLE_MODEL_<ROLE> names the Codex model here; the fallback keeps its default.
 	return Fallback{backend("codex", role, override), backend("claude", role, "")}
