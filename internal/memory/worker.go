@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 	"spindle/internal/source"
 )
 
-// Job asks the worker to run extraction for one session. Hooks write one at
+// Job asks the worker to ingest one session. Hooks write one at
 // the end of each turn, and a sweep of the sources writes them for sessions
 // no hook reported. Every model call happens in the worker, so a hook never
 // waits.
@@ -48,14 +50,19 @@ func pending(home string) []string {
 	return paths
 }
 
-// Models picks the model for a role given the agent that queued the work.
-type Models func(agent string, role model.Role) model.Model
+// Models picks the model for a role.
+type Models func(role model.Role) model.Model
+
+// Agents picks the agent for a role that runs as a session.
+type Agents func(role model.Role) model.Agent
 
 // WorkerOptions configures a worker run.
 type WorkerOptions struct {
 	Models  Models
+	Agents  Agents
+	Spin    string // the spin binary dream sessions run their commands with; default: this one
 	Log     io.Writer
-	NoDream bool
+	NoDream bool // skip the dream gate check; rollups still run
 	NoSweep bool
 	Now     func() time.Time
 	// Sources are swept before the queue is drained; nil reads sources.json.
@@ -73,7 +80,17 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 		o.Now = time.Now
 	}
 	if o.Models == nil {
-		o.Models = func(agent string, role model.Role) model.Model { return model.For(agent, role) }
+		o.Models = model.For
+	}
+	if o.Agents == nil {
+		o.Agents = model.AgentFor
+	}
+	if o.Spin == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		o.Spin = exe
 	}
 	if o.Sources == nil {
 		o.Sources = func() ([]source.Source, error) { return source.Load(home) }
@@ -102,22 +119,23 @@ func Work(ctx context.Context, home string, o WorkerOptions) error {
 	}
 }
 
+// drain ingests every queued job, then writes the rollups that came due
+// and dreams the stores whose gate is open.
+//
+// Ensures: several jobs for one transcript make one Ingest pass.
+// Ensures: a failed job is logged and its cursor stays, so the next Stop
+// or sweep retries it; it doesn't stop the other jobs.
 func drain(ctx context.Context, home string, o WorkerOptions) error {
-	agent := ""
 	for {
 		paths := pending(home)
 		if len(paths) == 0 {
 			break
 		}
-		// Many Stops for one transcript are one pass.
 		jobs := map[string]Job{}
 		var order []string
 		for _, path := range paths {
 			var j Job
 			if err := readJSON(path, &j); err == nil && j.Transcript != "" {
-				if j.Cwd == "" {
-					j.Cwd = j.Root
-				}
 				if _, ok := jobs[j.Transcript]; !ok {
 					order = append(order, j.Transcript)
 				}
@@ -125,32 +143,37 @@ func drain(ctx context.Context, home string, o WorkerOptions) error {
 			}
 			os.Remove(path)
 		}
-		for _, tp := range order {
+		for _, loc := range order {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			j := jobs[tp]
-			agent = j.Agent
-			p, err := jobContext(home, j)
-			if err != nil {
-				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
-				continue
-			}
-			res, err := Extract(ctx, p, tp, o.Models(j.Agent, model.Extract), o.Now())
-			switch {
-			case err != nil:
-				// The cursor did not move, so the next Stop retries.
-				fmt.Fprintf(o.Log, "%s extract %s: %v\n", stamp(o.Now()), tp, err)
-			case res.Skip == "":
-				fmt.Fprintf(o.Log, "%s extract %s %s: %d written, %d deleted, %d skipped\n", stamp(o.Now()), orDash(p.Name), filepath.Base(tp), res.Written, res.Deleted, res.Result.Skipped)
+			if err := ingestJob(ctx, home, jobs[loc], o); err != nil {
+				// The cursor didn't move, so the next Stop or sweep retries.
+				fmt.Fprintf(o.Log, "%s ingest %s: %v\n", stamp(o.Now()), loc, err)
 			}
 		}
 	}
-	if o.NoDream || agent == "" {
-		return nil
+	RollUp(ctx, home, o.Models(model.Rollup), o.Now(), time.Local, o.Log)
+	if !o.NoDream {
+		DreamDueStores(ctx, home, o.Agents(model.Dream), o.Spin, o.Now(), o.Log)
 	}
-	DreamDueStores(ctx, home, o.Models(agent, model.Dream), o.Now(), o.Log)
 	return nil
+}
+
+func ingestJob(ctx context.Context, home string, j Job, o WorkerOptions) error {
+	p, err := jobContext(home, j)
+	if err != nil {
+		return err
+	}
+	s, err := source.Read(ctx, j.Transcript)
+	if err != nil {
+		return err
+	}
+	res, err := Ingest(ctx, p, s, o.Models(model.Ingest), o.Now())
+	if err == nil && res.Skip == "" {
+		fmt.Fprintf(o.Log, "%s ingest %s %s: %d project, %d global, %d unfiled\n", stamp(o.Now()), orDash(p.Name), filepath.Base(j.Transcript), res.Project, res.Global, res.Unfiled)
+	}
+	return err
 }
 
 func sweep(ctx context.Context, home string, o WorkerOptions) {
@@ -164,27 +187,97 @@ func sweep(ctx context.Context, home string, o WorkerOptions) {
 	}
 }
 
+// RollupsPerRun caps the rollups one run writes, newest first, so a long
+// backlog (after a migration, or a side model that was down) is worked off
+// over several runs instead of holding the worker for an hour.
+const RollupsPerRun = 12
+
+// RollUp writes due rollups in global and every project, newest first, a
+// round at a time (sessions, then days, then weeks) until none is due or
+// RollupsPerRun are written. Unfiled has no timeline in any index, so it
+// gets none.
+//
+// Requires: the caller holds worker.lock, the rollups' only writer.
+// Ensures: a failed Summarize is logged and leaves that window due; the
+// rest still run. It returns how many rollups it wrote.
+func RollUp(ctx context.Context, home string, m model.Model, now time.Time, loc *time.Location, log io.Writer) int {
+	all, err := stores(home)
+	if err != nil {
+		fmt.Fprintf(log, "%s rollup: %v\n", stamp(now), err)
+	}
+	written, failed := 0, map[Window]bool{}
+	for round := 0; round < 3 && written < RollupsPerRun; round++ {
+		progress := false
+		for _, st := range all {
+			es, err := st.Entries()
+			if err != nil {
+				fmt.Fprintf(log, "%s rollup %s: %v\n", stamp(now), st.Name, err)
+				continue
+			}
+			rs, _ := st.Rollups()
+			due := DueRollups(Timeline(es, rs, loc), now, loc)
+			slices.SortStableFunc(due, func(a, b RollupTask) int { return b.Node.At.Compare(a.Node.At) })
+			for _, t := range due {
+				if ctx.Err() != nil || written >= RollupsPerRun {
+					return written
+				}
+				if failed[t.Window] {
+					continue
+				}
+				began := time.Now()
+				r, err := Summarize(ctx, m, t, now)
+				if err == nil {
+					err = st.SaveRollup(r)
+				}
+				st.Log(Event{At: now, Kind: "rollup", Project: st.Name, Name: t.Window.String(), Ms: time.Since(began).Milliseconds(), Note: string(r.Line), Err: errString(err)})
+				if err != nil {
+					failed[t.Window] = true
+					fmt.Fprintf(log, "%s rollup %s %s: %v\n", stamp(now), st.Name, t.Window, err)
+					continue
+				}
+				written++
+				progress = true
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	return written
+}
+
 // DreamDueStores dreams every store whose gate is open. The scheduled run
 // (spin dream --due) and the worker after each drain both call it; the gate
 // and the dream lock keep them from doubling up. It returns how many ran.
-func DreamDueStores(ctx context.Context, home string, m model.Model, now time.Time, log io.Writer) int {
+func DreamDueStores(ctx context.Context, home string, agent model.Agent, spin string, now time.Time, log io.Writer) int {
+	all, err := stores(home)
+	if err != nil {
+		fmt.Fprintf(log, "%s dream: %v\n", stamp(now), err)
+	}
 	n := 0
-	all, _ := stores(home)
-	for _, s := range all {
+	for _, st := range all {
 		if ctx.Err() != nil {
 			break
 		}
-		state, err := s.LoadState()
-		if err != nil || !DreamDue(state, now) {
+		cp, err := st.LoadCheckpoint()
+		if err != nil {
+			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), st.Name, err)
+			continue
+		}
+		es, err := st.Entries()
+		if err != nil || cp.Read > len(es) || !DreamDue(cp, es, now) {
+			continue
+		}
+		res, err := st.Dream(ctx, agent, spin, DreamApply, now)
+		if errors.Is(err, errLocked) {
 			continue
 		}
 		n++
-		res, err := Dream(ctx, s, m, now)
 		if err != nil {
-			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), s.Name, err)
+			fmt.Fprintf(log, "%s dream %s: %v\n", stamp(now), st.Name, err)
 			continue
 		}
-		fmt.Fprintf(log, "%s dream %s: %d written, %d deleted. %s\n", stamp(now), s.Name, res.Written, res.Deleted, res.Summary)
+		fmt.Fprintf(log, "%s dream %s: %d changed, %d rejected. %s\n", stamp(now), st.Name, len(res.Changes), len(res.Rejected), res.Summary)
 	}
 	return n
 }

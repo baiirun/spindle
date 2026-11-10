@@ -1,5 +1,35 @@
 # Changelog
 
+## Layered memory
+
+Spindle is rebuilt around an append-only log. See [design.md](docs/design.md) for why.
+
+- **Four layers per store.** A log of one-line gists, each pointing at the transcript line, file or note it came
+  from; rollups by session, day and week; rule topics; and wiki pages, one per entity. v1's typed memory files,
+  `MEMORY.md` indexes and in-place rewrites are gone.
+- **Ingest replaces extraction.** After each turn a side model writes zero or more gists with a scope, project or
+  global. It never rewrites anything.
+- **Dream is an agent session** (Codex, then Claude) over the entries since its checkpoint. It reads pages,
+  transcripts, the project's repo and every store, and edits through `spin dream write` and `spin dream retire`,
+  which check each edit and record it with its reason and evidence in `page-changes.jsonl`. Pages changed any
+  other way are recorded too. `spin dream --dry-run` runs the session with nothing written.
+- **Per-prompt recall is gone.** Sessions start with a 12,000-byte index: instructions, rules, a timeline whose
+  detail fades with age, wiki page names and other projects. `UserPromptSubmit` and `PostToolUse` hooks are no
+  longer installed; old installs that still send them do nothing.
+- **Unlinked folders** put their project notes in `~/.spindle/unfiled`; linking the folder adopts them.
+- **New commands:** `spin log` (now the memory log; `append` adds an entry), `spin zoom`, `spin rules`,
+  `spin wiki`, `spin rollup`, `spin ingest`, `spin migrate`, `spin activity` (the old `spin log`).
+  Removed: `status`, `show`, `write`, `rm`, `history`, `extract`, `select`.
+- **MCP tools:** `memory_append`, `memory_search`, `memory_zoom`, `wiki_read`, `rules_list`, `rollup_read`,
+  `memory_projects`, `memory_project`. The write, delete, status, source, dream, log and history tools are gone;
+  agents only append.
+- **Model roles** are `ingest`, `rollup` and `dream` (`SPINDLE_MODEL_INGEST`, `_ROLLUP`, `_DREAM`), all Codex
+  first with Claude as fallback. `SPINDLE_RECALL` and `SPINDLE_RECALL_WAIT` are gone.
+- **Activity** goes to `activity.jsonl`; v1's `events.jsonl` is left as it was.
+- **Migration:** run `spin migrate`. It writes the layers beside v1's files and never changes them, and a rerun
+  adds only what is missing. The repo-root store migration from before projects were named is removed.
+- The OpenCode plugin sends only SessionStart, Stop and PreCompact, and puts the index in the system prompt.
+
 ## Viewer
 
 - New: `spin tui`, a read-only terminal viewer of every project's memories, with each memory's body, history and

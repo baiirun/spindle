@@ -1,9 +1,7 @@
-// Package tui is spin tui: a read-only terminal viewer for memory, with
-// projects on the left, the selected project's memories in the middle and one
-// memory's body, history or activity on the right. It follows prog's TUI
-// (Bubble Tea and Lip Gloss): one Model, keys handled in Update, panes drawn
-// line by line in View.
 package tui
+
+// The view follows prog's TUI (Bubble Tea and Lip Gloss): one Model, keys
+// handled in Update, panes drawn line by line in View.
 
 import (
 	"fmt"
@@ -19,8 +17,8 @@ import (
 type pane int
 
 const (
-	paneProjects pane = iota
-	paneMemories
+	paneStores pane = iota
+	paneItems
 	panePreview
 )
 
@@ -47,7 +45,7 @@ var (
 	inputStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	sepStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	typeColors    = map[string]lipgloss.Color{"user": "141", "directive": "214", "project": "42", "reference": "39"}
+	typeColors    = map[string]lipgloss.Color{"rule": "214", "person": "141", "project": "42", "link": "39", "tool": "75", "concept": "180", "org": "171"}
 )
 
 // Model is the viewer's state.
@@ -57,7 +55,7 @@ type Model struct {
 	err  error
 
 	group int    // cursor in the projects pane
-	items []Item // the middle pane: the group's memories, or search results
+	items []Item // the middle pane: the store's items, or search results
 	item  int    // cursor in items
 	focus pane
 	mode  previewMode
@@ -97,14 +95,14 @@ func (m *Model) load(context string) {
 // reload rereads the stores, keeping the selection where it still exists.
 func (m *Model) reload() {
 	groupName, ref := "", ""
-	if m.group < len(m.snap.Groups) {
-		groupName = m.snap.Groups[m.group].Name
+	if m.group < len(m.snap.Stores) {
+		groupName = m.snap.Stores[m.group].Name
 	}
 	if it, ok := m.current(); ok {
 		ref = it.Ref()
 	}
 	context := ""
-	for _, g := range m.snap.Groups {
+	for _, g := range m.snap.Stores {
 		if g.Context {
 			context = g.Name
 		}
@@ -148,14 +146,13 @@ func (m *Model) refreshPreview() {
 	m.scroll = 0
 	it, ok := m.current()
 	if !ok {
-		m.preview = []string{dimStyle.Render("No memory selected.")}
+		m.preview = []string{dimStyle.Render("Nothing selected.")}
 		return
 	}
-	mem := it.Memory
 	head := []string{
 		headStyle.Render(it.Ref()),
-		typeStyle(mem.Type).Render(orDash(mem.Type)) + dimStyle.Render("  modified "+mem.Modified.Local().Format("2006-01-02 15:04")),
-		mem.Description,
+		typeStyle(it.Tag).Render(it.Tag) + dimStyle.Render("  "+it.At.Local().Format("2006-01-02 15:04")),
+		it.Title,
 		"",
 		m.tabs(),
 		"",
@@ -163,20 +160,23 @@ func (m *Model) refreshPreview() {
 	var body string
 	switch m.mode {
 	case showBody:
-		body = mem.Body
+		body = it.Body
 	case showHistory:
 		hist, err := History(m.home, it)
-		if err != nil {
+		switch {
+		case err != nil:
 			body = errorStyle.Render("history: " + err.Error())
-		} else {
-			body = memory.FormatHistory(it.Ref(), hist, true)
+		case it.Page == nil:
+			body = "A log entry never changes."
+		default:
+			body = memory.FormatHistory(*it.Page, hist, true)
 		}
 	case showActivity:
 		evs := m.snap.Activity(it)
 		if len(evs) == 0 {
-			body = "No activity names this memory."
+			body = "No activity names this item."
 		} else {
-			lines := []string{dimStyle.Render(fmt.Sprintf("%d events, %d recalls; newest first", len(evs), Recalls(evs))), ""}
+			lines := []string{dimStyle.Render(fmt.Sprintf("%d events; newest first", len(evs))), ""}
 			for _, e := range evs {
 				lines = append(lines, e.String())
 			}
@@ -223,7 +223,7 @@ func (m Model) typeKey(msg tea.KeyMsg) Model {
 		m.showGroup()
 	case tea.KeyEnter:
 		m.typing = false
-		m.focus = paneMemories
+		m.focus = paneItems
 	case tea.KeyBackspace:
 		if r := []rune(m.query); len(r) > 0 {
 			m.query = string(r[:len(r)-1])
@@ -243,7 +243,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "right", "enter":
 		m.focus = min(m.focus+1, panePreview)
 	case "shift+tab", "left":
-		m.focus = max(m.focus-1, paneProjects)
+		m.focus = max(m.focus-1, paneStores)
 	case "up", "k":
 		m.move(-1)
 	case "down", "j":
@@ -264,7 +264,7 @@ func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setMode(showActivity)
 	case "/":
 		m.typing, m.searching, m.query = true, true, ""
-		m.focus = paneMemories
+		m.focus = paneItems
 		m.search()
 	case "esc":
 		if m.searching {
@@ -284,13 +284,13 @@ func (m *Model) setMode(mode previewMode) {
 // move moves the focused pane's cursor, or scrolls the preview, by d.
 func (m *Model) move(d int) {
 	switch m.focus {
-	case paneProjects:
-		g := clamp(m.group+d, 0, len(m.snap.Groups)-1)
+	case paneStores:
+		g := clamp(m.group+d, 0, len(m.snap.Stores)-1)
 		if g != m.group || m.searching {
 			m.group = g
 			m.showGroup()
 		}
-	case paneMemories:
+	case paneItems:
 		i := clamp(m.item+d, 0, len(m.items)-1)
 		if i != m.item {
 			m.item = i
@@ -337,10 +337,10 @@ func (m Model) View() string {
 	pw, mw, vw := m.widths()
 	var cols [][]string
 	if pw > 0 {
-		cols = append(cols, fit(m.projectsPane(pw, h), pw, h))
+		cols = append(cols, fit(m.storesPane(pw, h), pw, h))
 	}
 	if mw > 0 {
-		cols = append(cols, fit(m.memoriesPane(mw, h), mw, h))
+		cols = append(cols, fit(m.itemsPane(mw, h), mw, h))
 	}
 	if vw > 0 {
 		cols = append(cols, fit(m.previewPane(vw, h), vw, h))
@@ -367,22 +367,22 @@ func (m Model) title(p pane, text string) string {
 	return headStyle.Render(text)
 }
 
-func (m Model) projectsPane(w, h int) []string {
-	lines := []string{m.title(paneProjects, " Projects"), ""}
+func (m Model) storesPane(w, h int) []string {
+	lines := []string{m.title(paneStores, " Stores"), ""}
 	if m.err != nil {
 		return append(lines, errorStyle.Render(" "+m.err.Error()))
 	}
 	var rows []string
-	for i, g := range m.snap.Groups {
+	for i, g := range m.snap.Stores {
 		mark := " "
 		if g.Context {
 			mark = "*"
 		}
-		count := fmt.Sprintf("%d", len(g.Memories))
+		count := fmt.Sprintf("%d", len(g.Items))
 		name := ansi.Truncate(g.Name, w-len(count)-4, "…")
 		row := mark + name + strings.Repeat(" ", max(w-2-lipgloss.Width(name)-len(count), 1)) + count + " "
 		switch {
-		case i == m.group && m.focus == paneProjects && !m.searching:
+		case i == m.group && m.focus == paneStores && !m.searching:
 			row = selectedStyle.Render(row)
 		case i == m.group && !m.searching:
 			row = cursorStyle.Render(row)
@@ -392,35 +392,34 @@ func (m Model) projectsPane(w, h int) []string {
 	return append(lines, window(rows, m.group, 1, h-len(lines))...)
 }
 
-func (m Model) memoriesPane(w, h int) []string {
+func (m Model) itemsPane(w, h int) []string {
 	var head string
 	switch {
 	case m.searching:
 		head = fmt.Sprintf(" Search %q: %d", m.query, len(m.items))
-	case m.group < len(m.snap.Groups):
-		g := m.snap.Groups[m.group]
+	case m.group < len(m.snap.Stores):
+		g := m.snap.Stores[m.group]
 		head = " " + g.Name
 		if g.Description != "" {
 			head += dimStyle.Render(" · " + g.Description)
 		}
 	}
-	lines := []string{ansi.Truncate(m.title(paneMemories, head), w, "…"), ""}
+	lines := []string{ansi.Truncate(m.title(paneItems, head), w, "…"), ""}
 	if len(m.items) == 0 {
-		return append(lines, dimStyle.Render(" No memories."))
+		return append(lines, dimStyle.Render(" Nothing here yet."))
 	}
 	var rows []string
 	for i, it := range m.items {
-		mem := it.Memory
-		name := mem.Name
+		name := it.ID
 		if m.searching {
 			name = it.Ref()
 		}
-		date := mem.Modified.Local().Format("2006-01-02")
+		date := it.At.Local().Format("2006-01-02")
 		name = ansi.Truncate(name, w-len(date)-3, "…")
 		top := " " + name + strings.Repeat(" ", max(w-2-lipgloss.Width(name)-len(date), 1)) + date + " "
-		bottom := " " + ansi.Truncate(orDash(mem.Type)+" · "+oneLine(mem.Description), w-2, "…")
+		bottom := " " + ansi.Truncate(it.Tag+" · "+oneLine(it.Title), w-2, "…")
 		switch {
-		case i == m.item && m.focus == paneMemories:
+		case i == m.item && m.focus == paneItems:
 			top, bottom = selectedStyle.Render(top), selectedStyle.Render(padTo(bottom, w))
 		case i == m.item:
 			top, bottom = cursorStyle.Render(top), cursorStyle.Render(padTo(bottom, w))
@@ -499,10 +498,3 @@ func typeStyle(t string) lipgloss.Style {
 func clamp(x, lo, hi int) int { return max(lo, min(x, hi)) }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}

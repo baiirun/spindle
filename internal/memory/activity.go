@@ -8,12 +8,13 @@ import (
 	"time"
 )
 
-// Event is one line of the activity log, events.jsonl: what memory did,
-// when, for which session and in which project's folder. It is for people reading along (spin log);
-// nothing reads it back into context.
+// Event is one line of the activity log, activity.jsonl: what spindle did,
+// when, for which session and in which project's folder. It is telemetry for
+// people reading along (spin activity), not memory: nothing reads it back into
+// context, and v1's events.jsonl is left where it is.
 type Event struct {
 	At      time.Time `json:"at"`
-	Kind    string    `json:"kind"` // start, select, recall, skip, call, extract, dream, warn
+	Kind    string    `json:"kind"` // start, call, ingest, rollup, dream, sweep, migrate, warn
 	Agent   string    `json:"agent,omitempty"`
 	Session string    `json:"session,omitempty"`
 	Project string    `json:"project,omitempty"` // the session's project
@@ -27,7 +28,7 @@ type Event struct {
 
 const eventPromptChars = 300
 
-func (p Project) eventsPath() string { return filepath.Join(p.Home, "events.jsonl") }
+func (p Project) eventsPath() string { return filepath.Join(p.Home, "activity.jsonl") }
 
 // Log appends an event, best effort: a full disk must not break a hook.
 func (p Project) Log(e Event) {
@@ -47,7 +48,7 @@ func (p Project) Log(e Event) {
 // Events reads the activity log, oldest first.
 func (p Project) Events() ([]Event, error) { return readJSONL[Event](p.eventsPath()) }
 
-// String renders an event as one line for spin log.
+// String renders an event as one line for spin activity.
 func (e Event) String() string {
 	var b strings.Builder
 	sess := e.Session
@@ -63,8 +64,6 @@ func (e Event) String() string {
 	}
 	if len(e.Files) > 0 {
 		b.WriteString(" → " + strings.Join(e.Files, ", "))
-	} else if e.Kind == "select" || e.Kind == "recall" {
-		b.WriteString(" → nothing")
 	}
 	if e.Note != "" {
 		b.WriteString(" · " + e.Note)

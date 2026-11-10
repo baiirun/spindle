@@ -9,222 +9,225 @@ This is the mechanism: what runs, when, what it reads and writes. [design.md](de
 Claude Code / Codex session (OpenCode: through its plugin)
   │ hook events (JSON on stdin)         │ MCP tool calls (stdio)
   ▼                                     ▼
-spin hook ──────────────┐        spin mcp
-  │  start, recall,     │          │
-  │  queue extraction   │          │
-  ▼                     ▼          ▼
-internal/hooks     internal/memory.Client  ◄── spin show/write/search/... (CLI)
+spin hook ─────────────┐         spin mcp
+  │ SessionStart: index│           │
+  │ Stop etc.: queue   │           │
+  ▼                    ▼           ▼
+internal/hooks    internal/memory.Client  ◄── spin index/log/search/zoom/rules/wiki/... (CLI)
         │                │
         └──────► internal/memory ──► ~/.spindle (plain files)
                          │
-                 spin select / spin worker / spin dream --due   (detached processes, launchd)
+                 spin worker / spin dream --due   (detached processes, launchd)
                          │
-                 internal/model ──► claude -p  |  codex exec
+                 internal/model  ──► claude -p  |  codex exec
                  internal/source ──► internal/transcript (finds and reads sessions)
 ```
 
 | Package | Job |
 |---|---|
-| `cmd/spin` | The one binary: hooks, MCP server, CLI, worker, selector, dream runner. |
-| `internal/hooks` | Turns one hook event into memory actions and the context to add. Prints install config. |
+| `cmd/spin` | The one binary: hooks, MCP server, CLI, worker, dream runner. |
+| `internal/hooks` | Turns one hook event into the index or a queued job. Prints install config and the OpenCode plugin. |
 | `internal/mcp` | A minimal stdio MCP server, and the memory tools as thin wrappers over `memory.Client`. |
-| `internal/memory` | Stores, projects, refs, recall, extraction, dreaming, the queue and worker, logs, prompts. |
-| `internal/model` | Side-model calls through the `claude` and `codex` CLIs, and the Codex-then-Claude fallback. |
-| `internal/source` | The places sessions come from: lists the sessions each one has that changed, and reads one session. |
-| `internal/transcript` | Reads Claude Code and Codex transcripts, and the OpenCode plugin's, into one list of user and assistant messages, leaving out tool calls and injected text. |
+| `internal/memory` | Stores and projects, the four layers, ingest, the index, search and zoom, dream, the queue and worker, migration. |
+| `internal/model` | Model calls through the `claude` and `codex` CLIs, Codex first and Claude on failure: one-shot completions for ingest and rollups, and agent sessions for dream. |
+| `internal/source` | The places sessions come from: lists sessions that changed, and reads one. |
+| `internal/transcript` | Reads Claude Code, Codex and OpenCode transcripts into user and assistant messages, each with its line. |
+| `internal/tui` | `spin tui`, the read-only viewer. |
 
-Hooks never wait on a model except the prompt hook's short wait for recall. Anything slow runs in a detached
-`spin` process that carries `SPINDLE_INNER=1`, so the hooks fired by its own `claude` or `codex` calls do nothing.
+## Stores
 
-## Stores, projects and refs
+A store is a folder: `~/.spindle/global`, `~/.spindle/unfiled` or `~/.spindle/projects/<name>`. Each holds:
 
-A **store** is a folder of memories: `~/.spindle/global` or `~/.spindle/projects/<name>`. A memory is one Markdown
-file there. Each store has a `MEMORY.md` index that code rebuilds after every change, grouped by type, newest first
-within a type, and capped at 200 lines and 25 KB.
+| File | Layer | Written by |
+|---|---|---|
+| `log.jsonl` | the log: one entry per line | `Append`, from ingest, `memory_append`, `spin log append`, adoption and migration |
+| `rollups/<s\|d\|w>/<key>.json` | rollups | the worker |
+| `rules/<slug>.md` | rule topics | `ApplyEdits`, from dream, the CLI's editor and migration |
+| `wiki/<slug>.md` | wiki pages | `ApplyEdits`, as rules |
+| `page-changes.jsonl` | every page change, with before and after | `ApplyEdits` |
+| `dream.json` | how far dream has read the log | dream, and migration once |
+| `dream-session.json`, `.jsonl` | a running dream's session and its commands' outcomes | dream; removed when it ends |
 
-Everywhere outside a store, a memory is named by its **ref**, `<store>/<name>`. Reading or writing a bare name tries
-the session's project, then global, then any project that has it, so writing an existing name updates it where it
-is.
+A log entry:
 
-A session's **context** is its folder, and the project that folder hints at. `memory.Hint` checks
-`SPINDLE_PROJECT` first, then the project with the deepest linked folder that contains the working directory.
-Without either, the session has no project. Hooks and the client work out the context again on every call. It
-decides two things: what the session starts with, and where a write goes by default. It doesn't limit what can be
-read.
+```json
+{"id":"e-19a6e1c2f41a1b2c3d4","at":"2026-11-10T14:02:00Z","session":"6a1f...","folder":"/Users/b/code/spindle",
+ "source":{"kind":"codex_session","path":"/Users/b/.codex/sessions/2026/11/10/rollout-....jsonl","line":412},
+ "gist":"Rollups are written by a side model, not the working agent."}
+```
 
-**Write routing** (`route`), first match wins:
+A page is Markdown with a small frontmatter that spindle parses strictly: `name` (the slug, matching the file),
+`title`, `kind` (wiki only: person, project, link, tool, concept or org), `evidence` (entry ids) and `updated`.
 
-1. a project in the name (`eldspire/x`) or in the op's `project` field (created if new);
-2. the session's project, if it already has that name;
-3. global, if it already has that name;
-4. global, for type `user`;
-5. the session's project;
-6. otherwise an error: this folder has no project, so name one.
-
-Deletes go wherever the name is found. A write never links a folder. Only `memory_project` and
-`spin project --link` do that.
-
-`ApplyAll` groups ops by store and applies each group under that store's lock. It never holds two store locks at
-once. Every write and delete is appended to the store's `changes.jsonl` with the text before and after, and then the
-index is rebuilt.
+A session's **context** is its folder and the project that folder hints at: `SPINDLE_PROJECT`, else the project
+with the deepest linked folder that contains it, else none. It decides what the session starts with and where its
+entries go. It never limits what can be read.
 
 ## Session start
 
-`SessionStart` (startup, resume, clear, compact) returns:
+`SessionStart` (startup, resume, clear, compact) returns the index, at most 12,000 bytes:
 
-1. the memory instructions (`Instructions` in `prompts.go`): the types, where memories go, and when to read and write;
-2. the global index;
-3. the session's project's index, with refs, or a note that the folder has no project;
-4. one line per other project: name, memory count, description, most recently changed first.
+1. the instructions: how to note with `memory_append`, how to read with `memory_zoom`, `memory_search` and
+   `wiki_read`, and that memory is a claim to check;
+2. the rules, the session's project's then global's, in full up to 4,000 bytes and by name after that;
+3. without a project, a line saying notes here wait in unfiled, how many there are, and to link the folder;
+4. the timelines, the session's project's then global's;
+5. the wiki's page names and kinds;
+6. one line per other project.
 
-The whole thing fits in 9,500 characters. What the instructions leave is shared between the sections: 20% for
-global, 65% for the session's project and 15% for the other projects. A section that needs less than its share
-passes the rest on, first to the sections after it and then to any that still has lines to show. Each section is
-cut on its own, so a long project index never pushes global out. A cut index keeps its directives, then its most
-recently changed memories, and ends with a line such as `+34 more in spindle, use memory_search`. Everything cut is
-still found by recall and search. `memory_index` and `spin index` show every section uncut.
+The timelines get what the other sections leave: 70% to the project, 30% to global, and each passes on what it
+doesn't use. A store that can't be read whole still shows what it can, and the problem goes to the activity log.
 
-The global dream is told global's share and how much of it global uses, so it keeps global small enough to load
-whole.
+**The timeline** (`Timeline`, `FitTimeline`) is derived from the log and the rollups and never stored. Entries
+group into sessions, sessions and loose entries into the day of their first entry, days into ISO weeks, all in
+the machine's time zone, placed by time rather than log order. A node shows its rollup's line only while the
+rollup is fresh: its `inputs` digest equals the digest of everything under the node, so a new entry, or a child's
+new rollup, makes the node and all its parents stale.
 
-On `clear` and `compact` the session's recall state is reset, so those memories can be recalled again.
+Fitting starts from the weeks. A node with no fresh line is always shown as its parts. Then it opens the newest
+node with parts into them, again and again, until the newest node's parts don't fit. So the newest entries show
+word for word, recent days as sessions, and old history as week lines. If even that is over budget, the oldest
+lines go and a first line says how many entries they held.
 
-## Recall
+## Ingest
 
-On each `UserPromptSubmit`:
+Jobs come from two places. `Stop`, `PreCompact` and `SessionEnd` write a job (agent, session, transcript, folder,
+project) to `queue/` and start `spin worker`. The worker's sweep queues sessions no hook reported, once quiet for
+10 minutes (see Sources below). One worker runs at a time (`worker.lock`); one that finds it held exits, and the
+running one reads the queue until it is empty. Several jobs for one transcript make one pass.
 
-1. Skip if the prompt is one word, there are no memories at all, or the session has already been shown 61,440 bytes
-   since its last compaction. Each skip is logged.
-2. Record a pending selection in `recall/<session>.json` with the prompt, the session's project, its folder and its
-   transcript path.
-3. Spawn `spin select`, and wait up to `SPINDLE_RECALL_WAIT` (4 s).
-4. `spin select` gives the selector:
-   - the newest 200 memories of every store as `[type] project/file (mtime): description`;
-   - the files already shown this session;
-   - the session context: the folder, the project and its description, the projects already recalled from, and
-     the user's last three messages, read from the transcript.
+A pass (`Ingest`) reads the session through its source and starts after the later of its cursor in
+`cursors.json` and the last line this session's entries cite in the stores it writes to. It skips subagents, no
+new messages, and new user text under 20 characters. Otherwise one model call gets the folder and project, the 30
+newest entries of each target store (so it doesn't repeat what the agent noted), and the new messages numbered by
+line (each cut at 6,000 characters, the window at 60,000, oldest cut first). It returns gists, each with a line and
+a scope:
 
-   The system prompt asks for only the memories that will clearly help, and is wary of profile and overview memories that merely share words with the message. It returns up to 5 files. A pick without its
-   project prefix is accepted when only one store has that file.
-5. If the picks are ready inside the wait, they go in with the prompt. If not, `PostToolUse` attaches them after the
-   next tool call. `Stop` drops picks that never arrived.
+- `project` gists go to the session's project, or to `unfiled` with the folder when there is none;
+- `global` gists go to global.
 
-An attachment starts with "Retrieved for possible relevance". Each file is cut at 4 KB. A file more than a day old
-carries a "This memory is N days old" warning, so the agent checks it against what it sees now. A file is shown at most once per session.
-`SPINDLE_RECALL=local` swaps the model for word-overlap matching in the hook itself.
+A gist citing a line that isn't a new message, or that fails `ParseGist`, is dropped and counted in the activity
+log. A failed model call or a reply that isn't the schema appends nothing and leaves the cursor, so the next pass
+retries. The cursor moves after the entries are appended.
+
+**Adoption.** Linking a folder (`spin project --link`, `memory_project`) copies the unfiled entries from that
+folder or below into the project's log, each with `adopted` naming the original. A second link copies nothing.
+
+## Rollups
+
+After draining the queue the worker runs `RollUp` over global and every project. `DueRollups` lists the windows
+that are closed (a session quiet for 30 minutes, a day or week whose end has passed), whose parts all have lines,
+and that have no fresh rollup. Children come due before parents, so a session, then its day, then its week, over
+successive rounds. `Summarize` asks for one line of at most 280 bytes over the parts. At most 12 rollups are
+written per run, newest first, so a backlog is worked off over several runs. A failed call leaves the window due.
+
+## Dream
+
+A dream is one agent session over one store, under its `dream.lock`.
+
+**The gate:** a store is due when 5 distinct sessions have added entries since its checkpoint and its last dream
+is at least 24 hours old (or it never dreamed). The worker checks every store after each run; the hourly
+`spin dream --due` sweeps and ingests first, then checks.
+
+**Before the session**, pages whose files differ from what `page-changes.jsonl` last recorded (hand edits made
+outside spin) are recorded as `cli`. Then `LoadDreamInput` gathers up to 300 entries after the checkpoint, oldest
+first, the rollups of their sessions and days, every rule topic and page, and the project's linked folders. A page
+that doesn't parse stops the dream, since dream would otherwise take it for missing.
+
+**The session** runs in the store's folder (`model.AgentFor(Dream)`: Codex, then Claude; no timeout). Its task
+holds the notes with their ids and pointers, the summaries, the rule topics in full, the page list, the folders,
+and the commands it may run. It reads pages, the transcripts its notes point at, the project's repo and, through
+`spin zoom`, `search`, `log` and `rules`/`wiki list|show`, every store. It changes pages only with:
+
+```sh
+spin dream write  --session <path> rules/<slug>|wiki/<slug> --title T [--kind K] --evidence IDS --reason WHY < body.md
+spin dream retire --session <path> rules/<slug>|wiki/<slug> --evidence IDS --reason WHY
+```
+
+`dream-session.json` in the store names the store, the entries the session may cite and the mode; the commands
+refuse to work unless that store's `dream.lock` is held. Each command builds one page from the fields (keeping the
+page's evidence), checks it with `CheckEdits` (a reason, text that parses, no retirement of a missing page, evidence
+only from the session's entries or the page's own) and applies it with `ApplyEdits` as `dream`. A refused edit
+exits non-zero with the reason, so the agent can fix it and try again. Each outcome goes to `dream-session.jsonl`.
+
+| CLI | How it runs | What it may do |
+|---|---|---|
+| `codex exec` | `--sandbox workspace-write`, `--ignore-user-config`, cwd the store, `--add-dir` the home, `approval_policy="never"`, ephemeral | read anywhere, write only under the home, no network, none of the user's MCP servers or hooks |
+| `claude -p` | `--tools Bash,Read,Grep,Glob`, `--allowedTools` the commands plus Read, Grep and Glob, `--permission-mode dontAsk`, `--add-dir` the home, source folders and project folders, no MCP servers or settings | read those folders, run only the listed commands |
+
+**After the session**, pages that changed without a command (Codex's sandbox can grant the home only as a whole)
+are recorded as `dream`, so every change stays in the history. The activity log and `spin dream` say which CLI
+and model finished the session. The checkpoint moves only if the session finished,
+and never in a dry run; a failed session keeps what it applied, and the next one sees those pages. `spin dream
+--dry-run` runs the session with the commands recording what they would write.
+
+## Search and zoom
+
+`LoadCorpus` reads every store, unfiled included. `Search` ranks rules, wiki pages, rollups and entries by how
+many query words they contain, then by recency; each hit carries its evidence entries. An unfiled entry a project
+has adopted is shown only as the copy. `Zoom` opens a window id into its line and its parts, an entry into its gist
+and pointer, or a page ref into the page and the entries it cites. An id several stores have opens in each, and a
+`<store>/` prefix picks one.
 
 ## Sources
 
-A source is one place sessions live. It does two things: list its sessions that changed between two times, and
-read one session as user and assistant messages. Each message's `Line` is its position in the session and only
-grows, so a cursor is a number for every source. A session is known by its location, which for the local sources
-is the transcript's path.
+A source lists its sessions that changed between two times and reads one session. A message's `line` only grows,
+so a cursor is a number for every source.
 
 | Kind | Lists | Leaves out |
 |---|---|---|
 | `claude-code` | `*.jsonl` under `~/.claude/projects`, by modified time | `subagents/` folders |
 | `codex` | `*.jsonl` under `~/.codex/sessions`, by modified time | |
-| `opencode` | `*.jsonl` the plugin writes under `~/.spindle/opencode`, by modified time | subagent sessions, whose session line names a parent (left out on read) |
+| `opencode` | `*.jsonl` the plugin writes under `~/.spindle/opencode` | subagent sessions |
 
-`sources.json` lists the sources; without it, all three are read. `memory.Client.AddSource` and `RemoveSource` (CLI
-`spin sources add|rm`, MCP `memory_source`) rewrite it under `sources.lock`, and each entry records when it was
-added.
+`sources.json` lists the sources; without it, all three are read. Each worker run starts with a sweep: for each
+source, the sessions that changed after its mark (in `sweeps.json`) and up to 10 minutes ago, with unread messages,
+are queued, and the mark moves up. A new source's first sweep only sets its mark. A source that fails keeps its
+mark.
 
-**The sweep.** Each worker run starts with one. For each source it lists the sessions that changed after the
-source's mark (in `sweeps.json`) and up to 10 minutes ago, so a session still going is left to its hooks. A
-session already read after its last change is passed over. The rest are read, and those with messages past their
-cursor are queued as jobs. The mark then moves up. A new source's first sweep only sets its mark: to when the entry was added, or to the
-sweep's own window for the defaults. So a default that is new to an install, as `opencode` was, reads no history
-either. An entry added after its old mark, say removed and added again, starts afresh
-the same way. A source that
-fails keeps its mark, so the next sweep tries the same window, and the others go on.
+## Migration from v1
 
-## Extraction
-
-Jobs come from two places. `Stop`, `PreCompact` and `SessionEnd` write a job (agent, session, transcript, folder,
-the project at that moment) to `queue/` and start `spin worker`, so a local turn is read within seconds. The sweep
-writes jobs for the sessions no hook reported, with the folder the transcript records. Only one worker runs at a
-time (`worker.lock`). A worker that finds the lock held exits, and the running one picks up the new job, because
-it reads the queue until it is empty. Several jobs for one transcript make one pass.
-
-A pass reads the session through its source, and takes the messages after its cursor in `cursors.json`. It skips when:
-
-- there are no new messages;
-- the new user text is under 20 characters;
-- the transcript is a subagent's;
-- the main agent wrote memory itself during those messages (only the agent's own writes count, not the CLI's).
-
-Otherwise it makes two model calls, so the model reads what it might change before it writes:
-
-1. **Read.** Input: the session section (folder, project, all project names), every store's file list and the new
-   messages (each message cut at 6,000 characters, the whole window at 60,000). Output: `nothing_to_save`, or which
-   files to read (at most 20).
-2. **Write.** Input: those files in full, the list again and the messages. Output: `write` and `delete` ops, each
-   with a `project` (or "" for the default). Code routes and applies them.
-
-The cursor then moves to the last message read, even if the pass was skipped. A failed model call leaves it where
-it was, so the next turn retries. The session is counted toward the dream gate of its project and of every store
-the pass changed.
-
-## Dreaming
-
-A dream is one pass over one store. Its phases are orient, gather recent signal, consolidate, prune, and
-reconcile against the instruction files. The model is given:
-
-- every memory file in the store;
-- `CLAUDE.md`, `AGENTS.md` and `.claude/CLAUDE.md` from the project's first linked folder;
-- recent messages from the sessions counted since the last dream, read through their sources, newest sessions
-  first, up to 120,000 characters.
-
-It returns write and delete ops plus a summary. Code applies the ops to that store only, resets the gate, and
-appends the summary to `dreams.jsonl`.
-
-**The gate:** a store is due when at least 5 sessions have counted toward it and its last dream is at least
-24 hours old (or it has never dreamed).
-
-**When it's checked:**
-
-- hourly, by the launchd job (`spin dream --due`), after a worker run that sweeps the sources;
-- at the end of every worker run.
-
-**Running one by hand:** `spin dream --force`, or `memory_dream`, which starts `spin dream --force` in the
-background.
-
-Each store has a non-blocking `dream.lock`, so a second dream on the same store exits at once.
+`spin migrate` reads each store's v1 `memory/*.md` and `changes.jsonl` and writes the layers beside them, never
+touching v1's files. Every change row becomes an entry at its time; a memory v1 never logged becomes one too. User
+and directive memories become rule topics; project memories wiki pages of kind project, references of kind link,
+anything else concept. Each page cites its memory's last logged write. Entry ids derive from what they migrate, so
+a rerun appends only what's missing and creates only missing pages. When the log holds only migrated entries,
+dream's checkpoint starts after them, since the pages already reflect them.
 
 ## Models
 
-All side calls go through a CLI the user has already signed in to:
-
-- `claude -p` with no tools, no MCP servers, no settings and no saved session;
-- `codex exec`, read-only and ephemeral, with an output schema.
+All model calls go through a CLI the user has already signed in to, so spindle has no keys of its own. Ingest and
+rollups are one-shot completions (`model.Model`): `claude -p` with no tools, MCP servers, settings or saved
+session, or `codex exec`, read-only, ephemeral and without the user's `config.toml`, with an output schema. Every
+Codex call skips that file because its MCP servers run outside the sandbox and could write. Dream is an agent session
+(`model.Agent`), confined as the table under Dream shows.
 
 | Role | First | Fallback |
 |---|---|---|
-| select | the session's own CLI (`sonnet`, or `gpt-6-luna` at low effort) | none |
-| extract | Codex `gpt-6-luna`, low effort | Claude `sonnet` |
-| dream | Codex `gpt-6-luna`, medium effort | Claude `opus` |
+| ingest | Codex `gpt-6-luna`, low effort | Claude `sonnet` |
+| rollup | Codex `gpt-6-luna`, low effort | Claude `sonnet` |
+| dream (an agent session) | Codex `gpt-6-luna`, medium effort | Claude `opus` |
 
-The fallback (`model.Fallback`) moves to the next model on any error, and also when a reply that should be JSON
-isn't. `SPINDLE_BACKEND` pins one CLI for every role, with no fallback.
+`model.Fallback` moves on at any error, and when a reply that should be JSON isn't; `model.AgentFallback` moves
+on when a session fails, and the next agent sees what the first applied. `SPINDLE_BACKEND` pins one CLI for every
+role.
 
 ## Logs
 
-- `events.jsonl` at the home records what memory did, for people reading along. Each line names the session's
-  project. Kinds are start, select, recall, skip, call (an MCP or CLI call, with its caller), extract, sweep and dream.
-  Nothing reads it back into context.
-- `changes.jsonl` in each store is the audit trail behind `history` and `--restore`.
+- `activity.jsonl` at the home records what spindle did, for people: start, call (an MCP or CLI call, with its
+  caller), ingest, rollup, dream, sweep, migrate and warn. Nothing reads it back into context. v1's `events.jsonl`
+  is left where it is.
+- `page-changes.jsonl` in each store is the history behind `spin rules history` and `spin wiki history`.
 
 ## Concurrency
 
 | Lock | Held by | Kind |
 |---|---|---|
-| `<store>/lock` | anything changing a store's memories, `project.json` or `state.json` | waits |
-| `<store>/dream.lock` | a running dream | non-blocking |
-| `worker.lock` | the running worker, and with it every sweep and `sweeps.json` | non-blocking |
+| `<store>/lock` | `Append`, `ApplyEdits`, and changes to `project.json` | waits |
+| `<store>/dream.lock` | a running dream, for its whole session; its commands check it is held | non-blocking |
+| `worker.lock` | the running worker: sweeps, `sweeps.json`, rollups | non-blocking |
 | `cursors.lock` | updates to `cursors.json` | waits |
-| `recall/<session>.json.lock` | updates to one session's recall state | waits |
-| `migrate.lock` | upgrading stores written by an earlier version ([CHANGELOG](../CHANGELOG.md)) | waits |
+| `sources.lock` | updates to `sources.json` | waits |
 
-Every lock is an `flock`, so the kernel releases it if a process dies. Files are written to a temporary file and
-then renamed into place.
+Every lock is an `flock`, so the kernel releases it if a process dies. Files other than logs are written to a
+temporary file and renamed into place; logs are appended a batch at a time in one write.

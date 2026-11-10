@@ -45,17 +45,27 @@ bin=$(/usr/bin/basename "$0")
 d="$FAKE_DIR"
 schema=""
 prev=""
+agent=""
 for a in "$@"; do
   [ "$prev" = "--json-schema" ] && schema="$a"
   [ "$prev" = "--output-schema" ] && schema=$(/bin/cat "$a")
+  case "$a" in workspace-write|--allowedTools) agent=1 ;; esac
   prev="$a"
 done
+if [ -n "$agent" ]; then
+  # A dream session: run the test's script of spin commands as the agent would.
+  /bin/cat > "$d/task"
+  echo "$bin session" >> "$d/calls"
+  if [ -f "$d/$bin.fail" ]; then echo "$bin: broken" >&2; exit 1; fi
+  SESSION=$(/usr/bin/sed -n 's/.*--session \([^ ]*\) .*/\1/p' "$d/task" | /usr/bin/head -1) /bin/sh "$d/session.sh" >> "$d/session.out" 2>&1
+  if [ "$bin" = claude ]; then echo '{"type":"result","result":"dreamt","is_error":false}'
+  else echo '{"type":"item.completed","item":{"type":"agent_message","text":"dreamt"}}'; fi
+  exit 0
+fi
 /bin/cat > /dev/null
 case "$schema" in
-  *selected_memories*) role=select ;;
-  *nothing_to_save*) role=read ;;
-  *'"summary"'*) role=dream ;;
-  *) role=write ;;
+  *'"gists"'*) role=ingest ;;
+  *) role=rollup ;;
 esac
 echo "$bin $role" >> "$d/calls"
 if [ -f "$d/$bin.fail" ]; then echo "$bin: broken" >&2; exit 1; fi
@@ -86,7 +96,6 @@ func newWorld(t *testing.T) *world {
 	w.env = []string{
 		"SPINDLE_HOME=" + w.home, "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(),
 		"PATH=" + bin + ":/usr/bin:/bin", "FAKE_DIR=" + w.fakes, "SPIN=" + spinBin,
-		"SPINDLE_RECALL_WAIT=5",
 	}
 	w.spin(w.work, "", "project", "proj", "--link", w.work)
 	return w
@@ -105,7 +114,7 @@ func (w *world) answer(role, js string) {
 	os.WriteFile(filepath.Join(w.fakes, role+".codex"), []byte(codex), 0o644)
 }
 
-// flag creates or removes a switch file such as "codex.fail" or "select.sleep".
+// flag creates or removes a switch file such as "codex.fail" or "ingest.sleep".
 func (w *world) flag(name, content string, on bool) {
 	path := filepath.Join(w.fakes, name)
 	if on {
@@ -203,13 +212,21 @@ func (w *world) idle() {
 	})
 }
 
-func (w *world) memory(store, name string) string {
+// entries reads a store's log.
+func (w *world) entries(store string) []map[string]any {
 	dir := filepath.Join(w.home, "projects", store)
-	if store == "global" {
-		dir = filepath.Join(w.home, "global")
+	if store == "global" || store == "unfiled" {
+		dir = filepath.Join(w.home, store)
 	}
-	b, _ := os.ReadFile(filepath.Join(dir, "memory", name+".md"))
-	return string(b)
+	b, _ := os.ReadFile(filepath.Join(dir, "log.jsonl"))
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func claudeTranscript(t *testing.T, path, session, cwd string, msgs ...string) {
@@ -228,131 +245,63 @@ func claudeTranscript(t *testing.T, path, session, cwd string, msgs ...string) {
 	}
 }
 
-func codexTranscript(t *testing.T, path, session, cwd string, msgs ...string) {
-	t.Helper()
-	start := time.Now().Add(-time.Hour)
-	meta, _ := json.Marshal(map[string]any{"timestamp": start, "type": "session_meta", "payload": map[string]any{"id": session, "cwd": cwd, "source": "cli"}})
-	lines := []string{string(meta)}
-	for i, m := range msgs {
-		role, kind := "user", "input_text"
-		if i%2 == 1 {
-			role, kind = "assistant", "output_text"
-		}
-		line, _ := json.Marshal(map[string]any{"timestamp": start.Add(time.Duration(i+1) * time.Minute), "type": "response_item",
-			"payload": map[string]any{"type": "message", "role": role, "content": []map[string]any{{"type": kind, "text": m}}}})
-		lines = append(lines, string(line))
-	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+const deployGists = `{"gists":[{"gist":"Deploys go through the Buildkite pipeline ship-it.","line":1,"scope":"project"}]}`
+
+// answerAll sets the replies every pass gets unless a test changes one.
+func (w *world) answerAll() {
+	w.answer("ingest", deployGists)
+	w.answer("rollup", `{"line":"Set up deploys through Buildkite ship-it."}`)
 }
 
-const deployOps = `{"ops":[{"op":"write","name":"deploy-pipeline","type":"reference","description":"Deploys run in the Buildkite pipeline ship-it","body":"Buildkite ship-it.","reason":""}]}`
-
-// One Claude Code session from start to recall: the index at start, a turn
-// that extracts in the background, and the memory recalled in a later
-// session, both in time and, when the selector is slow, after a tool call.
-func TestClaudeSessionEndToEnd(t *testing.T) {
+// One Claude Code session: the index at start, a turn ingested in the
+// background, its session summarized once idle, and the next session
+// starting with what was noted.
+func TestSessionEndToEnd(t *testing.T) {
 	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
-	w.answer("write", deployOps)
-	w.answer("select", `{"selected_memories":["proj/deploy-pipeline.md"]}`)
-
-	start := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s1", "source": "startup"})
-	if !strings.Contains(start, "memory_write") || !strings.Contains(start, "# proj (this folder's project)\n\nNo memories yet.") {
-		t.Fatalf("session start:\n%s", start)
+	w.answerAll()
+	start := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"})
+	if !strings.Contains(start, "memory_append") || !strings.Contains(start, "None yet.") {
+		t.Fatalf("first start context:\n%s", start)
 	}
-	tp := filepath.Join(t.TempDir(), "s1.jsonl")
-	claudeTranscript(t, tp, "s1", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
-	began := time.Now()
-	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s1", "transcript_path": tp})
-	if d := time.Since(began); d > 2*time.Second {
-		t.Errorf("Stop hook took %v; extraction must run detached", d)
-	}
-	w.waitFor("the extracted memory", func() bool { return w.memory("proj", "deploy-pipeline") != "" })
+	tp := filepath.Join(t.TempDir(), "s.jsonl")
+	claudeTranscript(t, tp, "s", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
+	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": tp})
+	w.waitFor("the entry", func() bool { return len(w.entries("proj")) == 1 })
 	w.idle()
-	if got := strings.Join(w.calls(), ","); got != "codex_read,codex_write" {
-		t.Errorf("extraction calls %s, want Codex first", got)
+	if got := strings.Join(w.calls(), ","); got != "codex_ingest,codex_rollup" {
+		t.Errorf("calls %s, want one ingest and the idle session's rollup", got)
 	}
-
-	if start := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s2", "source": "startup"}); !strings.Contains(start, "[deploy-pipeline](proj/deploy-pipeline.md)") {
-		t.Fatalf("next session's index:\n%s", start)
+	if rs, _ := filepath.Glob(filepath.Join(w.home, "projects", "proj", "rollups", "s", "*.json")); len(rs) != 1 {
+		t.Errorf("session rollups %v", rs)
 	}
-	got := w.hook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s2", "prompt": "how do we deploy this?", "transcript_path": tp})
-	if !strings.Contains(got, "Memory: proj/deploy-pipeline.md") || !strings.Contains(got, "Buildkite ship-it.") {
-		t.Fatalf("recall with the prompt:\n%s", got)
-	}
-	if c := w.calls(); c[len(c)-1] != "claude_select" {
-		t.Errorf("selector ran on %s, want the session's own CLI", c[len(c)-1])
-	}
-
-	// A selector slower than the wait: nothing with the prompt, then the
-	// picks ride the next tool call.
-	w.flag("select.sleep", "1.5", true)
-	began = time.Now()
-	got = w.hook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s3", "prompt": "how do we deploy this?"}, "SPINDLE_RECALL_WAIT=0.3")
-	if got != "" || time.Since(began) > 1200*time.Millisecond {
-		t.Fatalf("slow selector: %q after %v", got, time.Since(began))
-	}
-	var late string
-	w.waitFor("late picks", func() bool {
-		late = w.hook("claude", map[string]any{"hook_event_name": "PostToolUse", "session_id": "s3"})
-		return late != ""
-	})
-	if !strings.Contains(late, "Memory: proj/deploy-pipeline.md") {
-		t.Fatalf("after a tool call:\n%s", late)
-	}
-	if again := w.hook("claude", map[string]any{"hook_event_name": "PostToolUse", "session_id": "s3"}); again != "" {
-		t.Errorf("late picks attached twice")
-	}
-	evs := w.spin(w.work, "", "log", "--kind", "recall", "--json")
-	if !strings.Contains(evs, `"note":"with the prompt"`) || !strings.Contains(evs, `"note":"after a tool call"`) {
-		t.Errorf("activity log lacks the delivery split:\n%s", evs)
+	next := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s2", "source": "startup"})
+	if !strings.Contains(next, "Buildkite pipeline ship-it") {
+		t.Errorf("next start context lacks the entry:\n%s", next)
 	}
 }
 
-// What a Codex session saves, a Claude Code session in the same folder recalls.
-func TestCodexSavesClaudeRecalls(t *testing.T) {
-	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
-	w.answer("write", `{"ops":[{"op":"write","name":"no-mocks","type":"directive","description":"Integration tests hit a real database","body":"Real DB.\n\n**Why:** mocks hid a broken migration.\n**How to apply:** storage tests.","reason":""}]}`)
-	w.answer("select", `{"selected_memories":["no-mocks.md"]}`)
-	tp := filepath.Join(t.TempDir(), "rollout.jsonl")
-	codexTranscript(t, tp, "019e-codex", w.work, "Don't mock the database in integration tests, we got burned by a broken migration.", "Understood.")
-	w.hook("codex", map[string]any{"hook_event_name": "Stop", "session_id": "019e-codex", "transcript_path": tp})
-	w.waitFor("the directive", func() bool { return w.memory("proj", "no-mocks") != "" })
-	w.idle()
-	got := w.hook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "c1", "prompt": "should I mock the database in this test?"})
-	if !strings.Contains(got, "Memory: proj/no-mocks.md") || !strings.Contains(got, "**Why:** mocks hid") {
-		t.Fatalf("recall in Claude Code:\n%s", got)
-	}
-	if cur, _ := os.ReadFile(filepath.Join(w.home, "cursors.json")); !strings.Contains(string(cur), `"agent": "codex"`) {
-		t.Errorf("cursor not recorded as codex:\n%s", cur)
-	}
-}
-
-// Codex broken: Claude answers. Both broken: nothing is lost, and the next
-// turn retries the same messages.
+// A Codex failure falls back to Claude; when both fail the cursor stays,
+// and the next Stop retries the same messages.
 func TestFallbackAndRetry(t *testing.T) {
 	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
-	w.answer("write", deployOps)
+	w.answerAll()
 	w.flag("codex.fail", "", true)
 	tp := filepath.Join(t.TempDir(), "s.jsonl")
 	claudeTranscript(t, tp, "s", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
 	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": tp})
-	w.waitFor("the memory via Claude", func() bool { return w.memory("proj", "deploy-pipeline") != "" })
+	w.waitFor("the entry via Claude", func() bool { return len(w.entries("proj")) == 1 })
 	w.idle()
-	if got := strings.Join(w.calls(), ","); got != "codex_read,claude_read,codex_write,claude_write" {
-		t.Errorf("calls %s", got)
+	if got := w.calls(); len(got) < 2 || got[0] != "codex_ingest" || got[1] != "claude_ingest" {
+		t.Errorf("calls %v", got)
 	}
 
 	w.flag("claude.fail", "", true)
 	claudeTranscript(t, tp, "s", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.",
 		"Staging is shared with QA, so never reset it without asking.", "Got it.")
-	w.answer("write", `{"ops":[{"op":"write","name":"staging-shared","type":"project","description":"Staging is shared with QA","body":"Shared.","reason":""}]}`)
+	w.answer("ingest", `{"gists":[{"gist":"Staging is shared with QA: never reset it without asking.","line":3,"scope":"project"}]}`)
+	n := len(w.calls())
 	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": tp})
-	w.waitFor("the failed pass", func() bool { return len(w.calls()) >= 6 })
+	w.waitFor("the failed pass", func() bool { return len(w.calls()) >= n+2 })
 	w.idle()
 	if cur, _ := os.ReadFile(filepath.Join(w.home, "cursors.json")); !strings.Contains(string(cur), `"line": 2`) {
 		t.Fatalf("cursor moved past a failed pass:\n%s", cur)
@@ -361,20 +310,19 @@ func TestFallbackAndRetry(t *testing.T) {
 	w.flag("codex.fail", "", false)
 	w.flag("claude.fail", "", false)
 	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": tp})
-	w.waitFor("the retried memory", func() bool { return w.memory("proj", "staging-shared") != "" })
+	w.waitFor("the retried entry", func() bool { return len(w.entries("proj")) == 2 })
 	w.idle()
 }
 
-// Ten Stops at once for one transcript: one worker, one pass.
+// Ten Stops at once for one transcript: one worker, one ingest.
 func TestManyStopsOnePass(t *testing.T) {
 	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
-	w.answer("write", deployOps)
-	w.flag("read.sleep", "0.3", true)
+	w.answerAll()
+	w.flag("ingest.sleep", "0.3", true)
 	tp := filepath.Join(t.TempDir(), "s.jsonl")
 	claudeTranscript(t, tp, "s", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -382,24 +330,28 @@ func TestManyStopsOnePass(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	w.waitFor("the memory", func() bool { return w.memory("proj", "deploy-pipeline") != "" })
+	w.waitFor("the entry", func() bool { return len(w.entries("proj")) == 1 })
 	w.idle()
 	time.Sleep(300 * time.Millisecond)
 	w.idle()
-	if got := strings.Join(w.calls(), ","); got != "codex_read,codex_write" {
-		t.Errorf("calls %s, want one pass", got)
+	ingests := 0
+	for _, c := range w.calls() {
+		if strings.HasSuffix(c, "_ingest") {
+			ingests++
+		}
 	}
-	if ch, _ := os.ReadFile(filepath.Join(w.home, "projects", "proj", "changes.jsonl")); bytes.Count(ch, []byte("\n")) != 1 {
-		t.Errorf("changes.jsonl:\n%s", ch)
+	if ingests != 1 || len(w.entries("proj")) != 1 {
+		t.Errorf("calls %v, %d entries; want one ingest", w.calls(), len(w.entries("proj")))
 	}
 }
 
-// Invariant 17: hooks fired inside spindle's own model calls do nothing.
+// Hooks fired inside spindle's own model calls do nothing.
 func TestNoRecursion(t *testing.T) {
 	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":true,"read":[]}`)
+	w.answerAll()
+	w.answer("ingest", `{"gists":[]}`)
 	w.flag("recurse", "", true)
-	claudeTranscript(t, filepath.Join(w.fakes, "inner.jsonl"), "inner", w.work, "This transcript must never be extracted, it belongs to a side call.", "OK.")
+	claudeTranscript(t, filepath.Join(w.fakes, "inner.jsonl"), "inner", w.work, "This transcript must never be ingested, it belongs to a side call.", "OK.")
 	tp := filepath.Join(t.TempDir(), "s.jsonl")
 	claudeTranscript(t, tp, "s", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
 	w.hook("claude", map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": tp})
@@ -407,15 +359,15 @@ func TestNoRecursion(t *testing.T) {
 	w.idle()
 	time.Sleep(300 * time.Millisecond)
 	w.idle()
-	if got := strings.Join(w.calls(), ","); got != "codex_read" {
+	if got := strings.Join(w.calls(), ","); got != "codex_ingest" {
 		t.Errorf("calls %s: a side call's hook started more work", got)
 	}
-	if evs, _ := os.ReadFile(filepath.Join(w.home, "events.jsonl")); strings.Contains(string(evs), `"session":"inner"`) {
+	if evs, _ := os.ReadFile(filepath.Join(w.home, "activity.jsonl")); strings.Contains(string(evs), `"session":"inner"`) {
 		t.Errorf("activity from inside a side call:\n%s", evs)
 	}
 }
 
-// Invariant 16: whatever happens, the hook exits 0 and prints nothing bad.
+// Whatever happens, the hook exits 0 and prints nothing bad.
 func TestHookAlwaysExitsZero(t *testing.T) {
 	w := newWorld(t)
 	for name, c := range map[string]struct {
@@ -426,7 +378,11 @@ func TestHookAlwaysExitsZero(t *testing.T) {
 		"empty stdin":           {stdin: ""},
 		"relative SPINDLE_HOME": {stdin: `{"hook_event_name":"SessionStart","session_id":"s"}`, env: []string{"SPINDLE_HOME=relative/path"}},
 		"missing transcript":    {stdin: `{"hook_event_name":"Stop","session_id":"s","transcript_path":"/nope.jsonl"}`},
+		"damaged log":           {stdin: `{"hook_event_name":"SessionStart","session_id":"s"}`},
 	} {
+		if name == "damaged log" {
+			os.WriteFile(filepath.Join(w.home, "projects", "proj", "log.jsonl"), []byte("not json\n"), 0o644)
+		}
 		out, errOut, code := w.run(w.work, c.stdin, c.env, "hook", "--agent", "claude")
 		if code != 0 {
 			t.Errorf("%s: exit %d: %s", name, code, errOut)
@@ -434,94 +390,100 @@ func TestHookAlwaysExitsZero(t *testing.T) {
 		if strings.TrimSpace(out) != "" && !json.Valid([]byte(out)) {
 			t.Errorf("%s: output is not JSON: %q", name, out)
 		}
+		if name == "damaged log" && !strings.Contains(out, "memory_append") {
+			t.Errorf("a damaged log stopped the session's index: %q", out)
+		}
 	}
 	if log, _ := os.ReadFile(filepath.Join(w.home, "hooks.log")); !strings.Contains(string(log), "hook input") {
 		t.Errorf("bad input not logged:\n%s", log)
 	}
-	w.idle() // the Stop's worker writes to the home until it exits
+	w.idle()
 }
 
-// Invariant 15: hooks are fast even with a big memory and a hung selector.
+// Session start stays fast with a big log, and within its budget.
 func TestHookSpeed(t *testing.T) {
 	w := newWorld(t)
-	mem := filepath.Join(w.home, "projects", "proj", "memory")
-	for i := 0; i < 1000; i++ {
-		text := fmt.Sprintf("---\nname: m-%04d\ndescription: memory number %d with a realistic one-line description\nmetadata:\n  type: project\n---\n\nBody %d.\n", i, i, i)
-		os.WriteFile(filepath.Join(mem, fmt.Sprintf("m-%04d.md", i)), []byte(text), 0o644)
+	var b strings.Builder
+	start := time.Now().Add(-90 * 24 * time.Hour)
+	for i := range 20_000 {
+		line, _ := json.Marshal(map[string]any{"id": fmt.Sprintf("e-%06d", i), "at": start.Add(time.Duration(i) * 6 * time.Minute),
+			"session": fmt.Sprintf("s%04d", i/20), "source": map[string]any{"kind": "cli"}, "gist": fmt.Sprintf("entry number %d with a realistic one-line gist about the work", i)})
+		b.Write(line)
+		b.WriteByte('\n')
 	}
-	w.spin(w.work, "Rebuild.", "write", "--type", "project", "--description", "trigger an index rebuild", "rebuild")
+	os.WriteFile(filepath.Join(w.home, "projects", "proj", "log.jsonl"), []byte(b.String()), 0o644)
 	began := time.Now()
-	if s := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"}); len(s) == 0 {
-		t.Fatal("no start context")
-	}
+	s := w.hook("claude", map[string]any{"hook_event_name": "SessionStart", "session_id": "s", "source": "startup"})
 	if d := time.Since(began); d > time.Second {
-		t.Errorf("session start took %v with 1,000 memories", d)
+		t.Errorf("session start took %v with 20,000 entries", d)
 	}
-	w.answer("select", `{"selected_memories":[]}`)
-	w.flag("select.sleep", "10", true)
-	began = time.Now()
-	w.hook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "tell me about memory number 7"}, "SPINDLE_RECALL_WAIT=0.5")
-	if d := time.Since(began); d > 1500*time.Millisecond {
-		t.Errorf("prompt hook took %v with a 0.5 s wait", d)
+	if len(s) == 0 || len(s) > 12_000 {
+		t.Errorf("start context is %d bytes", len(s))
 	}
 }
 
-// Invariant 21: the CLI and the MCP tools are one core, with the same text.
+// A dream is an agent session that edits through spin dream write: a dry
+// run records the edit and writes nothing, a real run writes and records it,
+// and the commands refuse to work outside a running dream.
+func TestDreamSession(t *testing.T) {
+	w := newWorld(t)
+	w.answerAll()
+	w.spin(w.work, "", "log", "append", "--gist", "Byron wants PR titles to start with feat: or fix:.")
+	id := w.entries("proj")[0]["id"].(string)
+	script := fmt.Sprintf(`"$SPIN" dream write --session "$SESSION" rules/git-and-prs --title "Git and PRs" --evidence %s --reason stated <<'EOF'
+- PR titles start with feat: or fix:.
+EOF
+"$SPIN" dream write --session "$SESSION" wiki/ghost --title Ghost --kind tool --evidence e-nope --reason invented --body x
+`, id)
+	os.WriteFile(filepath.Join(w.fakes, "session.sh"), []byte(script), 0o644)
+
+	out := w.spin(w.work, "", "dream", "--dry-run")
+	if !strings.Contains(out, "would write rules/git-and-prs: stated") || !strings.Contains(out, "rejected wiki/ghost") || !strings.Contains(out, "by codex") {
+		b, _ := os.ReadFile(filepath.Join(w.fakes, "session.out"))
+		t.Errorf("dry run output:\n%s\nsession:\n%s", out, b)
+	}
+	rule := filepath.Join(w.home, "projects", "proj", "rules", "git-and-prs.md")
+	if _, err := os.Stat(rule); err == nil {
+		t.Fatal("the dry run wrote the rule")
+	}
+	if task, _ := os.ReadFile(filepath.Join(w.fakes, "task")); !strings.Contains(string(task), id) {
+		t.Errorf("the session's task lacks the note:\n%s", task)
+	}
+
+	w.spin(w.work, "", "dream", "--force")
+	if b, _ := os.ReadFile(rule); !strings.Contains(string(b), "feat: or fix:") || !strings.Contains(string(b), id) {
+		t.Errorf("rule after dream:\n%s", b)
+	}
+	if hist := w.spin(w.work, "", "rules", "history", "git-and-prs"); !strings.Contains(hist, "created by dream: stated") {
+		t.Errorf("history:\n%s", hist)
+	}
+	if _, errOut, code := w.run(w.work, "x", nil, "dream", "write", "--session", filepath.Join(w.home, "projects", "proj", "dream-session.json"), "rules/late", "--title", "Late", "--evidence", id, "--reason", "r"); code == 0 {
+		t.Errorf("dream write worked with no dream running: %s", errOut)
+	}
+}
+
+// The CLI and the MCP tools are one core, with the same text.
 func TestCLIAndMCPSayTheSame(t *testing.T) {
-	cli, srv := newWorld(t), newWorld(t)
-	type step struct {
-		cli   []string
-		stdin string
-		tool  string
-		args  map[string]any
-	}
-	body := "Real DB.\n\n**Why:** mocks hid a broken migration.\n**How to apply:** storage tests."
-	steps := []step{
-		{[]string{"write", "--type", "directive", "--description", "Integration tests hit a real database", "no-mocks"}, body, "memory_write", map[string]any{"name": "no-mocks", "type": "directive", "description": "Integration tests hit a real database", "body": body}},
-		{[]string{"write", "--global", "--type", "user", "--description", "Solo dev", "role"}, "Go.", "memory_write", map[string]any{"name": "role", "type": "user", "project": "global", "description": "Solo dev", "body": "Go."}},
-		{[]string{"show", "no-mocks"}, "", "memory_read", map[string]any{"name": "no-mocks"}},
-		{[]string{"search", "database", "tests"}, "", "memory_search", map[string]any{"query": "database tests"}},
-		{[]string{"index"}, "", "memory_index", nil},
-		{[]string{"projects"}, "", "memory_projects", nil},
-		{[]string{"history", "no-mocks"}, "", "memory_history", map[string]any{"name": "no-mocks"}},
-		{[]string{"rm", "--reason", "test", "no-mocks"}, "", "memory_delete", map[string]any{"name": "no-mocks", "reason": "test"}},
-	}
-	var rpc []string
-	rpc = append(rpc, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`)
-	for i, s := range steps {
-		args := s.args
-		if args == nil {
-			args = map[string]any{}
-		}
-		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": s.tool, "arguments": args}})
-		rpc = append(rpc, string(b))
-	}
-	out := srv.spin(srv.work, strings.Join(rpc, "\n")+"\n", "mcp", "--agent", "claude")
-	results := map[int]string{}
+	w := newWorld(t)
+	w.spin(w.work, "", "log", "append", "--gist", "Deploys go through the Buildkite pipeline ship-it.")
+	cli := w.spin(w.work, "", "search", "buildkite")
+	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"buildkite"}}}
+`
+	out := w.spin(w.work, req, "mcp", "--agent", "claude")
 	sc := bufio.NewScanner(strings.NewReader(out))
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	var got string
 	for sc.Scan() {
 		var r struct {
 			ID     int
 			Result struct{ Content []struct{ Text string } }
 		}
-		if json.Unmarshal(sc.Bytes(), &r) == nil && len(r.Result.Content) > 0 {
-			results[r.ID] = r.Result.Content[0].Text
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r.ID == 2 {
+			got = r.Result.Content[0].Text
 		}
 	}
-	norm := func(s, home, work string) string {
-		return strings.TrimSpace(strings.NewReplacer(home, "HOME", work, "WORK").Replace(s))
-	}
-	for i, s := range steps {
-		c := norm(cli.spin(cli.work, s.stdin, s.cli...), cli.home, cli.work)
-		m := norm(results[i+1], srv.home, srv.work)
-		if s.tool == "memory_history" { // who made the change differs by design: cli vs agent
-			c = strings.ReplaceAll(c, "by cli", "by WHO")
-			m = strings.ReplaceAll(m, "by agent", "by WHO")
-		}
-		if c != m {
-			t.Errorf("%s vs spin %s:\nCLI:\n%s\nMCP:\n%s", s.tool, s.cli[0], c, m)
-		}
+	if got != cli {
+		t.Errorf("MCP said:\n%s\nCLI said:\n%s", got, cli)
 	}
 }
 
@@ -531,132 +493,4 @@ func tryLock(f *os.File) bool {
 	}
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return true
-}
-
-// A session no hook reported, such as one whose hooks weren't installed, is
-// found by the sweep the hourly dream check runs, extracted, and counted.
-func TestSweepFindsHooklessSession(t *testing.T) {
-	w := newWorld(t)
-	w.answer("read", `{"nothing_to_save":false,"read":[]}`)
-	w.answer("write", deployOps)
-	home := ""
-	for _, e := range w.env {
-		if v, ok := strings.CutPrefix(e, "HOME="); ok {
-			home = v
-		}
-	}
-	if out := w.spin(w.work, "", "dream", "--due"); !strings.Contains(out, "nothing due") {
-		t.Fatalf("dream --due: %s", out)
-	}
-	if got := strings.Join(w.calls(), ","); got != "" {
-		t.Fatalf("the first sweep read old sessions: %s", got)
-	}
-	// Move the marks back, as if the first sweep ran an hour ago, and leave
-	// a settled transcript that changed since.
-	marks := map[string]map[string]any{}
-	b, _ := os.ReadFile(filepath.Join(w.home, "sweeps.json"))
-	json.Unmarshal(b, &marks)
-	for _, m := range marks {
-		m["swept"] = time.Now().Add(-time.Hour).UTC()
-	}
-	b, _ = json.Marshal(marks)
-	os.WriteFile(filepath.Join(w.home, "sweeps.json"), b, 0o644)
-	dir := filepath.Join(home, ".claude", "projects", "-work")
-	os.MkdirAll(filepath.Join(dir, "s9", "subagents"), 0o755)
-	tp := filepath.Join(dir, "s9.jsonl")
-	claudeTranscript(t, tp, "s9", w.work, "Our deploys go through the Buildkite pipeline called ship-it.", "Noted.")
-	sub := filepath.Join(dir, "s9", "subagents", "agent-1.jsonl")
-	claudeTranscript(t, sub, "s9", w.work, "A subagent's long task description, which is not the user talking.", "Done.")
-	old := time.Now().Add(-20 * time.Minute)
-	os.Chtimes(tp, old, old)
-	os.Chtimes(sub, old, old)
-
-	w.spin(w.work, "", "dream", "--due")
-	if w.memory("proj", "deploy-pipeline") == "" {
-		t.Fatalf("the swept session wasn't extracted; calls %v", w.calls())
-	}
-	if got := strings.Join(w.calls(), ","); got != "codex_read,codex_write" {
-		t.Errorf("calls %s, want one pass", got)
-	}
-	state, _ := os.ReadFile(filepath.Join(w.home, "projects", "proj", "state.json"))
-	if !strings.Contains(string(state), tp) {
-		t.Errorf("the session didn't count toward the dream:\n%s", state)
-	}
-	out := w.spin(w.work, "", "sources")
-	if !strings.Contains(out, "claude-code ("+filepath.Join(home, ".claude", "projects")+")") || !strings.Contains(out, "1 sessions changed, 1 queued for extraction") {
-		t.Errorf("spin sources:\n%s", out)
-	}
-	// Read once, it isn't queued again.
-	w.spin(w.work, "", "dream", "--due")
-	if n := len(w.calls()); n != 2 {
-		t.Errorf("a read session was extracted again: %v", w.calls())
-	}
-}
-
-// Sources are added and removed from the CLI and MCP alike.
-func TestSourcesAddRemove(t *testing.T) {
-	cli, srv := newWorld(t), newWorld(t)
-	type step struct {
-		cli  []string
-		args map[string]any
-	}
-	steps := []step{
-		{[]string{"sources", "add", "claude-code", "--dir", "WORK/claude"}, map[string]any{"action": "add", "kind": "claude-code", "dir": "WORK/claude"}},
-		{[]string{"sources", "add", "codex", "--dir", "WORK/codex"}, map[string]any{"action": "add", "kind": "codex", "dir": "WORK/codex"}},
-		{[]string{"sources", "rm", "codex"}, map[string]any{"action": "remove", "kind": "codex"}},
-	}
-	var rpc []string
-	rpc = append(rpc, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`)
-	for i, s := range steps {
-		args := map[string]any{}
-		for k, v := range s.args {
-			args[k] = strings.ReplaceAll(fmt.Sprint(v), "WORK", srv.work)
-		}
-		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": "memory_source", "arguments": args}})
-		rpc = append(rpc, string(b))
-	}
-	out := srv.spin(srv.work, strings.Join(rpc, "\n")+"\n", "mcp", "--agent", "claude")
-	results := map[int]string{}
-	sc := bufio.NewScanner(strings.NewReader(out))
-	for sc.Scan() {
-		var r struct {
-			ID     int
-			Result struct{ Content []struct{ Text string } }
-		}
-		if json.Unmarshal(sc.Bytes(), &r) == nil && len(r.Result.Content) > 0 {
-			results[r.ID] = r.Result.Content[0].Text
-		}
-	}
-	var homes []string
-	for _, w := range []*world{cli, srv} {
-		for _, e := range w.env {
-			if v, ok := strings.CutPrefix(e, "HOME="); ok {
-				homes = append(homes, v)
-			}
-		}
-	}
-	norm := func(s string, w *world, home string) string {
-		return strings.TrimSpace(strings.NewReplacer(w.home, "SPINDLE", w.work, "WORK", home, "HOME").Replace(s))
-	}
-	for i, s := range steps {
-		args := make([]string, len(s.cli))
-		for j, a := range s.cli {
-			args[j] = strings.ReplaceAll(a, "WORK", cli.work)
-		}
-		c := norm(cli.spin(cli.work, "", args...), cli, homes[0])
-		m := norm(results[i+1], srv, homes[1])
-		if c != m {
-			t.Errorf("step %d:\nCLI:\n%s\nMCP:\n%s", i, c, m)
-		}
-	}
-	got := norm(cli.spin(cli.work, "", "sources"), cli, homes[0])
-	if !strings.Contains(got, "claude-code (WORK/claude)") || strings.Contains(got, "codex") {
-		t.Errorf("after the steps:\n%s", got)
-	}
-	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "rm", "codex"); code == 0 || !strings.Contains(errOut, `no source "codex"`) {
-		t.Errorf("removing a missing source: exit %d %s", code, errOut)
-	}
-	if _, errOut, code := cli.run(cli.work, "", nil, "sources", "add", "nope"); code == 0 || !strings.Contains(errOut, "unknown source kind") {
-		t.Errorf("adding an unknown kind: exit %d %s", code, errOut)
-	}
 }

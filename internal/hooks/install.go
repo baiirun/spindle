@@ -31,12 +31,10 @@ func InstallConfig(agent, bin string) (string, error) {
 		return []map[string]any{{"hooks": []map[string]any{h}}}
 	}
 	hooks := map[string]any{
-		"SessionStart":     handler(10, false),
-		"UserPromptSubmit": handler(10, false), // waits up to SPINDLE_RECALL_WAIT (4 s) for the selector
-		"PostToolUse":      handler(5, false),
-		"Stop":             handler(30, true),
-		"PreCompact":       handler(10, false),
-		"SessionEnd":       handler(2, false), // Codex caps SessionEnd at 3 s
+		"SessionStart": handler(10, false),
+		"Stop":         handler(30, true),
+		"PreCompact":   handler(10, false),
+		"SessionEnd":   handler(2, false), // Codex caps SessionEnd at 3 s
 	}
 	if agent == "claude" {
 		b, _ := json.MarshalIndent(map[string]any{"autoMemoryEnabled": false, "hooks": hooks}, "", "  ")

@@ -3,12 +3,13 @@
 // same hookSpecificOutput.additionalContext back, so one handler serves both.
 // OpenCode's plugin (opencode.js) sends its events in the same shape.
 //
-//	SessionStart      instructions and the indexes (this folder's project, global, the rest); after compaction, recall may repeat
-//	UserPromptSubmit  start the selector; wait a few seconds and attach its picks if they are ready
-//	PostToolUse       attach the picks if they arrived after the prompt went in
-//	Stop              drop picks that never arrived; queue extraction (async)
-//	PreCompact        queue extraction, so memory catches up before context is lost
-//	SessionEnd        same; the tools allow 1-3 s here, so it only queues
+//	SessionStart  the index: instructions, rules, timelines, wiki names, other projects
+//	Stop          queue ingest (async)
+//	PreCompact    queue ingest, so memory catches up before context is lost
+//	SessionEnd    same; the tools allow 1-3 s here, so it only queues
+//
+// Every other event is ignored, so an older install that still sends
+// UserPromptSubmit or PostToolUse costs a process start and nothing more.
 //
 // A hook never fails the session: errors go to <SPINDLE_HOME>/hooks.log and
 // the hook exits 0.
@@ -51,10 +52,6 @@ type Handler struct {
 	Agent string // claude, codex or opencode; empty: detect from the transcript
 	// Spawn starts a detached `spin` with these arguments.
 	Spawn func(args ...string) error
-	// RecallWait is how long the prompt hook waits for the selector.
-	RecallWait time.Duration
-	// LocalRecall picks by word overlap in the hook itself, with no model.
-	LocalRecall bool
 }
 
 // Run reads one event from in and writes any reply to out.
@@ -90,33 +87,13 @@ func (h Handler) Handle(ctx context.Context, ev Input) (string, error) {
 	}
 	switch ev.Event {
 	case "SessionStart":
-		if ev.Source == "compact" || ev.Source == "clear" {
-			h.logErr(p.ResetRecall(ev.SessionID))
+		text, err := p.Index(time.Now())
+		if err != nil {
+			return "", err
 		}
-		text := p.StartContext()
-		p.Log(memory.Event{Kind: "start", Agent: agent, Session: ev.SessionID, Note: fmt.Sprintf("%s; index and instructions, %d bytes", orDefault(ev.Source, "startup"), len(text))})
+		p.Log(memory.Event{Kind: "start", Agent: agent, Session: ev.SessionID, Note: fmt.Sprintf("%s; index, %d bytes", orDefault(ev.Source, "startup"), len(text))})
 		return text, nil
-	case "UserPromptSubmit":
-		id, err := p.StartRecall(ev.SessionID, agent, ev.Prompt, ev.TranscriptPath, time.Now())
-		if err != nil || id == "" {
-			return "", err
-		}
-		if h.LocalRecall {
-			if err := memory.RunSelect(ctx, h.Home, ev.SessionID, id, nil, true); err != nil {
-				return "", err
-			}
-			return p.WaitRecall(ev.SessionID, id, 0)
-		}
-		if err := h.spawn("select", "--session", ev.SessionID, "--id", id, "--agent", agent); err != nil {
-			return "", err
-		}
-		return p.WaitRecall(ev.SessionID, id, h.RecallWait)
-	case "PostToolUse":
-		return p.AttachPending(ev.SessionID)
 	case "Stop", "PreCompact", "SessionEnd":
-		if ev.Event == "Stop" {
-			h.logErr(p.DropPending(ev.SessionID))
-		}
 		if ev.TranscriptPath == "" {
 			return "", nil
 		}
@@ -141,12 +118,6 @@ func (h Handler) spawn(args ...string) error {
 		return nil
 	}
 	return h.Spawn(args...)
-}
-
-func (h Handler) logErr(err error) {
-	if err != nil {
-		Logf(h.Home, "%v", err)
-	}
 }
 
 // Logf appends a line to <home>/hooks.log, best effort.

@@ -1,266 +1,174 @@
 # spindle design
 
-Spindle is a long-term memory that coding agents share. It remembers who the user is, how they like to work, what
-each project is about, and where things live. Claude Code and Codex use it through their hooks and an MCP server,
-and it is kept as plain files, one memory per file, across all of the user's projects. This doc sets out the
-principles it is built on and the reasons for them. [architecture.md](architecture.md) shows how it works, and
+Spindle is a long-term memory that coding agents share. It captures what happens in the user's sessions and
+serves it back to agents before and during work. Claude Code, Codex and OpenCode use it through their hooks and an
+MCP server, and it is kept as plain files across all of the user's projects. This doc sets out the decisions it is
+built on and the reasons for them. [architecture.md](architecture.md) shows how it works, and
 [shape.md](shape.md) lists the rules that keep it that way.
 
 ## What it is for
 
 An agent starts each session knowing nothing. Within a few turns the user has told it who they are, which
-approaches they want and which they've ruled out, what the project is aiming for, and where the dashboards live.
-Spindle carries that forward, so the next session, in either tool and in any project, starts from it.
+approaches they want and which they've ruled out, what the project is aiming for, and what was tried last week.
+Spindle carries that forward, so the next session, in any tool and any project, starts from it.
 
 It aims for four things:
 
-- **One memory per person.** It serves every agent and every project they work on, so what was learned anywhere
-  is available everywhere.
-- **The right few things in context.** A small index loads at the start of each session, and each message brings
-  in the handful of memories that bear on it. What reaches context stays the same size however large memory grows.
-- **It looks after itself.** Memories are written as work happens and consolidated on a schedule. The user can
-  always ask, but never has to.
-- **People can see and fix all of it.** Every memory is a file they can read and edit, and every recall, write
-  and consolidation shows up in a log.
+- **One memory per person,** serving every agent and project, so what was learned anywhere is available everywhere.
+- **A fixed amount in context.** Each session starts with the same 12,000-byte index however large memory grows,
+  and pulls more on demand.
+- **It looks after itself.** Notes are taken as work happens, summarized and consolidated in the background.
+- **People can see and fix all of it.** Every layer is a file, every claim points at what was said, and every
+  change to a rule or page records why.
 
-## Principles
+## Four layers
 
-### A memory is a small, typed note with a one-line description
+| Layer | Holds | Written by | Lifecycle |
+|---|---|---|---|
+| Log | One entry per thing worth keeping: a gist and a pointer to where it was said | ingest, the agent, the CLI | Append-only |
+| Rollups | One line per session, day and week | a side model | Derived; rebuilt when stale |
+| Rules | Directive topics an agent loads before acting | dream, or the user | Edited and retired with a change record |
+| Wiki | One page per entity: person, project, link, tool, concept, org | dream, or the user | As rules |
 
-Each memory is one Markdown file about one subject. A frontmatter header gives its name, a one-line description
-and its type, and the body follows. The description lets a model judge relevance without reading the body, which
-is what makes recall cheap.
+### The log is the truth
 
-There are four types, one for each kind of knowledge an agent needs to carry forward:
+Every other layer can be rebuilt from it, so a better prompt or model can reprocess all of history, and the
+pointer lets anyone check a claim against what was actually said. v1 rewrote a memory file in place when a fact
+changed; the old text survived only in an audit log nothing read. Here the history is the primary record and the
+current truth is derived from it.
 
-| Type | Holds | Example |
-|---|---|---|
-| `user` | who the user is: role, goals, expertise | "Solo developer, writes Go, runs several projects at once" |
-| `directive` | how the user wants work done: rules, corrections, approaches they confirmed | "Commit as baiirun, with no Claude attribution" |
-| `project` | the state of the work: goals, decisions, constraints, deadlines | "Extraction runs on Codex first, with Claude as the fallback" |
-| `reference` | where information lives and what it's for | "Scheduled dream runs log to ~/.spindle/dream.log" |
+### Notes are classified later, by dream
 
-Directive and project memories lead with the rule or fact, then give **Why:** and **How to apply:** lines. The
-reason lets a later agent handle cases the rule didn't name.
+At write time the working agent is mid-task with partial context, and any scheme it applies is frozen into the
+data. v1 asked the extraction pass to pick one of four types and a file to rewrite on every turn. Here ingest only
+notes what happened, with a scope (this project, or everywhere), and dream sorts notes into rules and pages with the
+whole picture in view. The scheme can change and be re-run.
 
-Memory holds what stays true across sessions. Code, git history and instruction files already answer questions
-about structure and change. Memory holds what they can't: the person, their preferences, and the reasons behind
-decisions.
+### A side model takes the notes and writes the summaries
 
-### Named things get one note each
+An agent summarizing its own session grades its own work and spends its working context doing it. So a cheap side
+model reads each turn after it ends and writes zero or more gists, each citing a line; another writes rollups. The
+agent can still note something mid-session with `memory_append`, and ingest is shown recent notes so it doesn't
+repeat them. OptMem has the working agent write its own summaries inline; that suits one agent with one memory, and
+costs the agent attention we would rather it spent on the task.
 
-> **Status:** designed, not yet built. The rest of this doc describes spindle as it runs today.
+### Rules and the wiki are separate because they are read differently
 
-Work keeps touching the same nouns: the person who wrote an essay, the company behind a tool, the post that changed
-a decision, the character a campaign keeps returning to. An **entity note** is a memory about one such thing. It
-gives each thing one place to be true, and links from other memories let a single recall bring in what surrounds
-it.
+Rules are a small set loaded into every session before acting. Wiki pages are pulled on demand when a topic comes
+up. A rule file is a topic holding its directives as a list, so rules stay few without a cap: an earlier draft
+capped topics at 12, but the real cost is bytes in the index, which already has its own budget, and a count can't
+tell a long topic from a short one.
 
-An entity note is an ordinary memory of type `reference` with one **kind** that says what the thing is. Types say
-how an agent should use what it knows; kinds say what a note is about. How to act around an entity stays in typed
-memories that link to it: a `directive` saying "send Dana drafts as docs" links to `[[person/dana]]`.
+### The wiki is organized by entity
 
-The note's name is `<kind>/<slug>`, its file is `<store>/<kind>/<slug>.md`, and outside its store it is
-`<store>/<kind>/<slug>`, such as `global/person/maggie-appleton`. A kind's own fields sit under `metadata`, and
-links to other notes are plain `[[kind/slug]]`.
+Questions arrive about a thing: a person, a project, a tool. One page per thing gives one place to look and one
+place to fix. Rollups answer the other question, what happened when.
 
-```yaml
----
-name: link/planning-with-agents
-description: Maggie Appleton essay; steer agents with visual boundary objects in thicker interfaces
-metadata:
-  type: reference
-  kind: link
-  url: https://maggieappleton.com/planning-agents
-  title: "Planning with Agents: Divided Worlds, Boundary Objects, and Thicker Interfaces"
-  author: "[[person/maggie-appleton]]"
-  published: 2026-09-14
-  saved: 2026-10-25
----
-Text plans and multiple-choice questions are a poor way for people to steer agents. Better to share visual
-boundary objects where agents prototype options and people decide.
+### Dream is an agent session, not a completion
 
-Why it mattered: came up while designing how threads ask for decisions.
-Concepts: [[concept/agent-interfaces]], [[concept/decision-card]]
-```
+Deciding what a note means for the wiki often needs more than the note: the page it might contradict, the
+transcript it came from, the code it describes. A single completion has to be handed all of that up front, or
+guess. So dream runs as an agent session with tools, like Codex v2's consolidation step: it reads the notes,
+opens what it needs (pages, transcripts, the repo, other stores) and edits as it goes.
 
-A link note always carries its URL and the reason it mattered. Spindle sees the conversation where a source came up,
-so it can write the why that a bookmark alone never records.
+It edits only through `spin dream write` and `spin dream retire`, each one edit checked and recorded on its own.
+A refused edit says why, so the agent fixes it instead of the whole pass failing. The commands work only while
+their store's dream runs, so working agents still only append. Codex's sandbox can make the home writable only
+as a whole, so the runner also records any page that changed without a command, and the history stays complete.
+There is no timeout: a session takes what it takes, and a failed one keeps what it applied.
 
-**Kinds are a curated memory.** Each store has a `kinds.md` listing its kinds, one line each, with what belongs
-there and the kind's fields. Every store starts from the same seed:
+### Every change carries a reason
 
-```markdown
-# Kinds
-- person: a real individual the user works with, reads or follows. Fields: url, aliases.
-- org: a company, team or publication. Fields: url.
-- link: a saved external source: a post, paper, video, tweet or repo. Fields: url (required), title, author, published, saved.
-- tool: software, a service or a library the user uses or weighs up. Fields: url.
-- concept: a named idea, term or theme the user keeps coming back to, with a body saying what it means to them.
-- other: anything that fits none of the above, held for the next dream.
-```
+Wikis rot without a curator; Librande's One-Page Designs talk (GDC 2010) says "if you are going to use a wiki then
+you need a dedicated owner." Dream does that curation, and the reason and evidence on each change show why a claim
+changed. When notes disagree, the newer wins, and the reason says what it replaced.
 
-A project store grows its own kinds: an Eldspire store would likely add `character`, `faction`, `place` and
-`session`. A kind name means the same thing in every store, so `[[person/...]]` reads the same everywhere. A store
-holds at most 12 kinds. A kind names what a thing is, never how finished its note is.
+### Anyone can edit any layer above the log
 
-**Concepts are the hubs.** A named idea gets a `concept` note with a body that says what it means to the user, and
-every note that links to it is listed on it automatically. Broad domains such as "design" get no concept note: they
-cover too much to steer recall.
+Human-written context helps agents and model-written context can hurt: in one study, human-written AGENTS.md files
+raised task success about 4% and LLM-generated ones lowered it about 3% (arXiv 2602.11988). So rules and pages are
+plain files the user edits with `spin rules edit` and `spin wiki edit`, recorded like dream's edits, and dream edits
+what is there rather than regenerating it.
 
-**Each part treats entities in its own way:**
+## Session start
 
-| Part | What it does with entities | Can change kinds |
-|---|---|---|
-| Extraction | Writes or updates a note when a named thing will matter again: a URL shared or researched, a person or org that keeps coming up. Matches an existing note by URL, name or alias first, picks a kind from `kinds.md` or `other`, and links typed memories to it. | No |
-| Index | Lists typed memories as now, plus one line per kind with a count, such as "link: 168 saved sources". | No |
-| Recall | Reads `kinds.md`. An entity joins the candidates when the message names it (name, alias, title or URL), or one hop out from a recalled memory. All of it shares the 5-file cap. | No |
-| Agent tools | `memory_search` filters by kind, and by what links to a concept. | No |
-| Dream | Curates kinds, fills stubs, writes concept bodies, merges duplicate URLs, flags dead ones. | Yes |
-| People | Edit any note or `kinds.md` by hand. | Yes |
+### The index, not per-prompt recall
 
-A dream curates kinds after its usual merge and prune:
+v1 ran a side-model selector on every message and attached up to five memories. It cost a model call per message,
+delayed the prompt by up to four seconds, and often arrived a turn late. Spindle now loads a fixed index at session
+start and leaves the rest to the agent: `memory_zoom`, `memory_search` and `wiki_read` when the work calls for it.
+Codex v2 memories make the same choice: one summary file under a hard cap at startup, with the detail one read away.
 
-1. **Promote.** When three or more `other` notes share a shape, add a kind, move them, and add its line.
-2. **Merge.** Fold a kind into its nearest neighbour when the two overlap, or when it has had fewer than three notes
-   for 30 days.
-3. **Fill stubs.** When three or more notes link to an entity with no note, write the note from what they say.
-4. **Clean links.** Merge link notes that share a URL, and flag a URL that no longer resolves.
-5. **Respect the cap.** At 12 kinds, a new kind needs a merge first.
+### Detail fades with age
 
-Moving a note renames its file and rewrites every `[[link]]` to it. Each step is one entry in `changes.jsonl`
-(`kind_add`, `kind_merge`, `move`), so `history` shows it and `restore` undoes it. A hand edit to `kinds.md` is the
-user's choice, and a dream leaves it in place.
+The timeline follows OptMem's `wake`: recent notes word for word, older history as session, day and week lines,
+fitted to a fixed budget by opening the newest node it can afford. Every line has an id that opens into its parts,
+so nothing is out of reach; it is only further away. Rollups are a cache with a digest of what they cover, so a
+missing or stale one shows as its parts, and a side model that is down makes the index longer-grained, never
+broken.
 
-**Why:** one kind per note keeps each thing in one obvious place. Keeping entities out of the per-line index and
-recalling them by name keeps the context budget where it is however many links and people pile up. Extraction and
-recall run often and fast, so they only read the taxonomy; the dream sees a whole store at once and runs at most
-daily, so it is the one that changes it. A `[[link]]` to a missing note is fine: it is a stub until enough notes
-point at it to write one.
+### The budget is fixed
 
-### An index is always loaded; memories are recalled per message
+Every session pays for the index, so it is 12,000 bytes, not a setting. Rules get the first 4,000; the timelines
+share most of the rest, 70% to the session's project and 30% to global.
 
-Each store keeps a `MEMORY.md` index: one line per memory, grouped by type and capped in size. At session start the
-agent gets instructions, the global index, the index of the project it's in, and one line for each other project.
-That's enough to know what exists. Each part has its own share of the space, so rules that apply everywhere are never
-crowded out by one busy project.
-
-On each message, a fast side model reads the newest memory descriptions together with the session's context and
-picks up to five memories that clearly bear on the message. Their full text is attached to the message.
-
-**Why:** the index orients the agent, and recall brings in detail only when it's needed. Both have fixed caps, so
-context cost doesn't grow with memory. Picking by description, with a model, matches on meaning rather than on
-shared words.
-
-### Memory is written as work happens
-
-After each turn, a background pass reads the new messages and decides whether anything is worth keeping: a new
-fact, a correction to an existing memory, or a memory that turned out wrong. It reads the memories it might
-change before it writes. The agent can also write directly when the user asks it to remember or forget
-something.
-
-**Why:** people rarely stop to say "remember this". The useful signal is in ordinary conversation: corrections,
-confirmed approaches, decisions and their reasons. Running the pass in the background keeps the session fast.
-
-### Sessions come from sources
-
-A source is one place sessions live: Claude Code's transcripts, Codex's, and in time others. Each source does the
-same two jobs: list the sessions that changed, and read one session's messages. A file lists the sources spindle
-reads, and extraction and dreams read sessions only through them. Hooks say "this session just changed" so a
-local turn is read within seconds, and a sweep of every source finds the sessions no hook reported.
-
-**Why:** a person's work happens in many harnesses, and only some of them run hooks on their machine. Reading
-sessions where they live, through one small interface, lets spindle learn from all of them, and adding a harness
-means adding one source. A cursor per session means no message is read twice, and a new source starts from the
-day it's added, so it never reads its whole history at once.
-
-### Memory is consolidated on a schedule
-
-Once a day at most, and only after enough new sessions, a deeper pass ("a dream") goes over one store as a whole.
-It merges duplicates, fixes facts that recent sessions have contradicted, prunes memories that have gone stale,
-and lines memory up with the project's instruction files. A scheduled job checks every hour whether a dream is
-due.
-
-**Why:** writing turn by turn piles up near-duplicates and outdated facts. Consolidating regularly keeps each
-memory current and the index sharp. Waiting for enough new sessions means each dream has something to work on.
-
-### Files hold the current truth; history sits beside them
-
-A changed fact rewrites its file, and a wrong memory is deleted. Every change is also recorded with the text it
-replaced, and `history` and `restore` read that record.
-
-**Why:** an agent should only ever see what is true now. Older versions in context would mislead it. People
-still need to see how a memory changed and to undo a bad change, so the history is kept for them.
-
-### One memory, shared across tools
-
-Recall, extraction and session start run as hooks, and agents read and write memory through MCP tools. Both
-Claude Code and Codex support the same hook events and MCP. The background passes run through the user's own
-`claude` and `codex` command-line tools.
-
-**Why:** a memory tied to one tool splits the user's knowledge in two. Hooks, MCP and files are common to both
-tools. The MCP tools work wherever the agent can run, sandboxes included. Running models through the user's own
-CLIs means spindle has no keys, accounts or billing of its own.
+## Projects
 
 ### One memory, shared across projects
 
-A project is a named body of work, such as "spindle" or "eldspire", with its own store. Global is a store for
-everything that applies everywhere: who the user is, and their standing rules. Every memory is named
-`<project>/<name>`, and recall, search and extraction see every store. Folders are linked to projects, and the
-folder a session runs in suggests which project it's in. That suggestion sets the index the session starts with
-and where new memories go by default.
+Projects are named by meaning ("spindle", "eldspire"), not by repository, and a folder only hints at which one a
+session is in. Search and zoom read every store, so what was learned in one project helps in another.
 
-**Why:** people work across many projects at once, and what's learned in one often matters in another. Naming
-projects by what they're about lets one body of work span several folders and repositories. Treating the folder
-as a suggestion keeps everything in reach. Linking folders only on purpose means a memory about one project can
-be saved from anywhere without moving the session's project.
+### Unlinked folders keep their notes
+
+A session in a folder linked to no project still produces notes about its work. Dropping them loses them for good,
+since the cursor moves on; putting them in global fills every session's index with one folder's details. So they
+wait in an `unfiled` store tagged with the folder, and linking the folder adopts them into the project. Unfiled is
+never loaded at start or dreamed.
+
+## Running
+
+### Work happens after the turn, in one worker
+
+Hooks never wait on a model. Stop, PreCompact and SessionEnd queue the session, and a detached worker ingests,
+writes rollups and dreams what is due. One worker at a time owns the queue, the sweep marks and the rollups, so
+none of them needs finer locking.
+
+### Every step converges on rerun
+
+Crashes, retries and two hooks firing at once are normal. Ingest starts after the last line its own entries cite,
+so a crash before the cursor moves doesn't duplicate notes. Dream moves its checkpoint last and skips edits already
+in place. Migration derives entry ids from what it migrates. Adoption records what it copied.
 
 ### Each job runs on the model that suits it
 
-- **Selection** runs on the session's own tool (Sonnet in Claude Code), because the user's message is waiting on it.
-- **Extraction and dreams** run on Codex with Luna first, falling back to Claude, because they run in the
-  background and need care more than speed.
-- **Fallback:** any failed call, or any reply that doesn't parse, moves to the next model.
+Background work runs Codex first and falls back to Claude, through CLIs the user is already signed in to, so
+spindle has no keys of its own. Ingest and rollups are cheap, frequent and narrow, so they are one-shot calls to a
+small model with no tools. Dream is rare and needs judgment, so it is a session with tools on a larger setting.
 
 ### One core with several interfaces
 
-One client implements every memory operation. The MCP tools, the command-line interface and the hooks are thin
-layers over it, and the tools and commands print the same text.
-
-**Why:** people and agents can each do and see the same things, and the interfaces stay in step because they
-share one implementation.
-
-### Everything is observable
-
-An activity log records each session start, recall pick, write, skip, extraction and dream, with timings and
-reasons. `spin log -f` follows it live.
-
-**Why:** memory acts on its own. A log of what it did, and why, is what lets people trust it, tune it and fix it.
+`memory.Client` implements what the CLI and the MCP tools share, and both print its text. Agents get only reads
+and `memory_append`; rule and page edits are the CLI's and dream's.
 
 ## Prior art
 
-Spindle's file format, its four-way split of knowledge, the index, the recall selector's prompt, the
-extraction pass and dreaming all follow Claude Code's auto memory, which ships at scale and documents its
-behavior. Codex's memories informed the use of a small model for background passes. Following an established
-design keeps spindle's behavior predictable to anyone who knows those tools.
-
-Entity notes follow the author's Zaum notes database: 913 notes, each with at most one category, where links carry
-a URL and an author, typed relations run both ways, and some categories carry their own fields. Two of its rules
-carry over as they are: an unresolved link is a breadcrumb, and a category never names a stage of development.
+- **OptMem** (github.com/VictorTaelin/OptMem): an append-only log of one-line memories, a binary tree of
+  summaries, and a `wake` that prints the tree with detail decaying by age within a line budget. Spindle's index,
+  its zoomable ids and its rollups-as-cache follow it, over calendar windows instead of power-of-two blocks.
+- **Codex memories v2**: per-session summaries from a small model, consolidated by an agent session into one
+  capped summary loaded at startup, with the detail read on demand. Spindle takes the startup cap, consolidation as
+  a session, the two model sizes, and treating stored text as data, not instructions.
+- **Claude Code's auto memory**: spindle v1 followed it: typed files, an index, a recall selector, extraction and
+  dreaming. Its instruction files remain the user's, and dream leaves out what they say.
 
 ## Open questions
 
-- **Compaction.** What should a session carry across a compaction? A continuation prompt that includes decisions,
-  open work and context would fit beside memory.
-- **Ranking.** Should memories that are often recalled and used rank higher when the selector has more candidates
-  than it can see?
-- **Size.** How should the selector cope past its 200 newest candidates as projects multiply?
-- **Reach.** Cloud sessions run no local hooks. A source can read them so memory learns from them; how they read
-  and write memory themselves is still open, and a git-backed store is one way.
-- **Seeding entities.** Import Zaum's links, people and organizations (419 notes) into global once, or leave Zaum
-  as the source and link out to it?
-- **Where shared entities live.** Should a dream move an entity to global once two projects link to it?
-- **Dead links.** Checking URLs needs network access during dreams. Flag them, or skip the check?
-- **Naming in recall.** Exact name and alias matching is cheap and certain. Should the selector also see entity
-  descriptions?
-- **Quality.** How well do recall and extraction work? This needs measuring on real sessions.
+- **Conflicts.** Newer evidence wins today. Should dream keep both claims, dated, when the older one may still
+  hold elsewhere?
+- **Where rules end and the wiki begins.** Preferences about a tool ("use pnpm") could be either.
+- **Usage.** Should pages that agents read often rank higher in search, and unread ones age out, as in Codex?
+- **Migrated history.** v1's change rows give a coarse timeline. Re-ingesting old transcripts would give a
+  better one, at a model call per turn.
+- **Sharing.** Single-user for now. An append-only log and one file per page keep a git-backed store possible.
+- **Quality.** How good are the notes, rollups and dreams? This needs measuring on real sessions.

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"spindle/internal/memory"
 )
@@ -27,7 +26,7 @@ func setup(t *testing.T) *env {
 	os.Mkdir(filepath.Join(e.root, ".git"), 0o755)
 	home := t.TempDir()
 	memory.Store(home, "proj").Link(e.root)
-	e.h = Handler{Home: home, Agent: "claude", RecallWait: time.Second,
+	e.h = Handler{Home: home, Agent: "claude",
 		Spawn: func(args ...string) error { e.spawned = append(e.spawned, args); return nil }}
 	return e
 }
@@ -52,45 +51,8 @@ func (e *env) run(t *testing.T, ev map[string]any) Output {
 func TestSessionStart(t *testing.T) {
 	e := setup(t)
 	o := e.run(t, map[string]any{"hook_event_name": "SessionStart", "source": "startup", "session_id": "s"})
-	if o.HookSpecificOutput.HookEventName != "SessionStart" || !strings.Contains(o.HookSpecificOutput.AdditionalContext, "memory_write") {
+	if o.HookSpecificOutput.HookEventName != "SessionStart" || !strings.Contains(o.HookSpecificOutput.AdditionalContext, "memory_append") {
 		t.Fatalf("output = %+v", o)
-	}
-}
-
-func TestPromptRecallLocalAndStop(t *testing.T) {
-	e := setup(t)
-	p := memory.Store(e.h.Home, "proj")
-	p.Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
-	e.h.LocalRecall = true
-	o := e.run(t, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"})
-	if !strings.Contains(o.HookSpecificOutput.AdditionalContext, "Memory: proj/event-log-store.md") {
-		t.Fatalf("recall = %+v", o)
-	}
-	e.run(t, map[string]any{"hook_event_name": "Stop", "session_id": "s", "transcript_path": "/t/s.jsonl"})
-	if len(e.spawned) != 1 || e.spawned[0][0] != "worker" {
-		t.Fatalf("spawned = %v", e.spawned)
-	}
-	jobs, _ := filepath.Glob(filepath.Join(e.h.Home, "queue", "*.json"))
-	if len(jobs) != 1 {
-		t.Fatalf("jobs = %v", jobs)
-	}
-}
-
-func TestPromptRecallAsync(t *testing.T) {
-	e := setup(t)
-	p := memory.Store(e.h.Home, "proj")
-	p.Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
-	e.h.RecallWait = 100 * time.Millisecond
-	o := e.run(t, map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"})
-	if o.HookSpecificOutput.AdditionalContext != "" || len(e.spawned) != 1 || e.spawned[0][0] != "select" {
-		t.Fatalf("output %+v, spawned %v", o, e.spawned)
-	}
-	// The selector finishes after the prompt went in; the next tool call carries it.
-	args := e.spawned[0]
-	memory.RunSelect(context.Background(), p.Home, "s", args[4], nil, true)
-	o = e.run(t, map[string]any{"hook_event_name": "PostToolUse", "session_id": "s"})
-	if !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store.md") || o.HookSpecificOutput.HookEventName != "PostToolUse" {
-		t.Fatalf("PostToolUse = %+v", o)
 	}
 }
 
@@ -116,7 +78,10 @@ func TestInstallConfig(t *testing.T) {
 		if err := json.Unmarshal([]byte(out[i:j+2]), &cfg); err != nil {
 			t.Fatalf("%s: %v\n%s", agent, err, out)
 		}
-		for _, ev := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PreCompact", "SessionEnd"} {
+		if len(cfg.Hooks) != 4 {
+			t.Fatalf("%s: hooks %v; recall is gone, so only start and the three that queue ingest", agent, cfg.Hooks)
+		}
+		for _, ev := range []string{"SessionStart", "Stop", "PreCompact", "SessionEnd"} {
 			if h := cfg.Hooks[ev]; len(h) != 1 || h[0].Hooks[0]["command"] != "'/opt/my bin/spin' hook --agent "+agent {
 				t.Fatalf("%s %s = %+v", agent, ev, h)
 			}
@@ -138,9 +103,14 @@ func TestInstallOpencode(t *testing.T) {
 		t.Fatalf("binary not filled in:\n%s", out)
 	}
 	for _, s := range []string{`"hook", "--agent", "opencode"`, `"mcp", "--agent", "opencode"`,
-		`"SessionStart"`, `"UserPromptSubmit"`, `"PostToolUse"`, `"Stop"`, `"PreCompact"`} {
+		`"SessionStart"`, `"Stop"`, `"PreCompact"`} {
 		if !strings.Contains(out, s) {
 			t.Errorf("plugin lacks %s", s)
+		}
+	}
+	for _, s := range []string{`"UserPromptSubmit"`, `"PostToolUse"`} {
+		if strings.Contains(out, s) {
+			t.Errorf("plugin still sends %s; recall is gone", s)
 		}
 	}
 }
@@ -156,7 +126,7 @@ func TestOddInputDoesNothing(t *testing.T) {
 	for _, ev := range []map[string]any{
 		{"hook_event_name": "Notification", "session_id": "s"},
 		{"hook_event_name": "Stop", "session_id": "s"},                                      // no transcript
-		{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "hello there"}, // no memories yet
+		{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "hello there"}, // v1 installs still send it
 		{"hook_event_name": "PostToolUse", "session_id": "never-seen"},
 	} {
 		if o := e.run(t, ev); o.HookSpecificOutput.AdditionalContext != "" {
@@ -165,25 +135,6 @@ func TestOddInputDoesNothing(t *testing.T) {
 	}
 	if len(e.spawned) != 0 {
 		t.Errorf("spawned %v", e.spawned)
-	}
-}
-
-// After a compaction the recalled files are gone from context, so they may
-// be recalled again.
-func TestCompactionAllowsRecallAgain(t *testing.T) {
-	e := setup(t)
-	memory.Store(e.h.Home, "proj").Apply([]memory.Op{{Op: "write", Name: "event-log-store", Type: "project", Description: "Event log lives in Postgres", Body: "Postgres."}}, "agent", "", time.Now())
-	e.h.LocalRecall = true
-	ask := map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": "where is the event log stored?"}
-	if o := e.run(t, ask); !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store") {
-		t.Fatal("first recall missing")
-	}
-	if o := e.run(t, ask); o.HookSpecificOutput.AdditionalContext != "" {
-		t.Fatal("recalled twice in one context")
-	}
-	e.run(t, map[string]any{"hook_event_name": "SessionStart", "session_id": "s", "source": "compact"})
-	if o := e.run(t, ask); !strings.Contains(o.HookSpecificOutput.AdditionalContext, "event-log-store") {
-		t.Fatal("not recalled again after compaction")
 	}
 }
 

@@ -27,19 +27,16 @@ func TestParseClaude(t *testing.T) {
 
 func TestForPicksBackends(t *testing.T) {
 	t.Setenv(BackendEnv, "")
-	t.Setenv("SPINDLE_MODEL_EXTRACT", "")
+	t.Setenv("SPINDLE_MODEL_INGEST", "")
 	want := Fallback{Codex{Model: "gpt-6-luna", Effort: "low"}, Claude{Model: "sonnet"}}
-	if got := For("claude", Extract); !reflect.DeepEqual(got, want) {
-		t.Errorf("extract = %#v", got)
+	if got := For(Ingest); !reflect.DeepEqual(got, want) {
+		t.Errorf("ingest = %#v", got)
 	}
-	if got := For("", Dream); !reflect.DeepEqual(got, Fallback{Codex{Model: "gpt-6-luna", Effort: "medium"}, Claude{Model: "opus"}}) {
+	if got := For(Dream); !reflect.DeepEqual(got, Fallback{Codex{Model: "gpt-6-luna", Effort: "medium"}, Claude{Model: "opus"}}) {
 		t.Errorf("dream = %#v", got)
 	}
-	if got := For("claude", Select); got != (Claude{Model: "sonnet"}) {
-		t.Errorf("select = %#v", got)
-	}
 	t.Setenv(BackendEnv, "claude")
-	if got := For("codex", Extract); got != (Claude{Model: "sonnet"}) {
+	if got := For(Ingest); got != (Claude{Model: "sonnet"}) {
 		t.Errorf("pinned = %#v", got)
 	}
 }
