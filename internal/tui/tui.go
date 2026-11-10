@@ -498,10 +498,3 @@ func typeStyle(t string) lipgloss.Style {
 func clamp(x, lo, hi int) int { return max(lo, min(x, hi)) }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}

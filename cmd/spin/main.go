@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -467,7 +468,9 @@ func editPage(st memory.Project, ref memory.PageRef) (string, error) {
 			return string(b), nil
 		}
 		fmt.Fprintf(os.Stderr, "%v\nPress Enter to edit again, or Ctrl-C to give up.\n", err)
-		fmt.Scanln()
+		if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+			return "", fmt.Errorf("the page doesn't parse, and there is no terminal to edit again: %w", err)
+		}
 	}
 }
 

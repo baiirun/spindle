@@ -53,8 +53,7 @@ func ParseWindow(id string) (Window, error) {
 			return Window{}, bad
 		}
 	case WeekWindow:
-		var year, week int
-		if n, _ := fmt.Sscanf(key, "%04d-W%02d", &year, &week); n != 2 || weekKey(weekStart(year, week, time.UTC)) != key {
+		if _, _, ok := parseWeekKey(key); !ok {
 			return Window{}, bad
 		}
 	default:
@@ -68,6 +67,14 @@ func dayKey(t time.Time) string { return t.Format(time.DateOnly) }
 func weekKey(t time.Time) string {
 	y, w := t.ISOWeek()
 	return fmt.Sprintf("%04d-W%02d", y, w)
+}
+
+// parseWeekKey reads "2026-W45", accepting only a week that exists.
+func parseWeekKey(key string) (year, week int, ok bool) {
+	if n, err := fmt.Sscanf(key, "%04d-W%02d", &year, &week); err != nil || n != 2 {
+		return 0, 0, false
+	}
+	return year, week, weekKey(weekStart(year, week, time.UTC)) == key
 }
 
 // weekStart is the Monday that starts ISO week w of year y, at midnight in loc.
@@ -84,8 +91,10 @@ func (w Window) end(loc *time.Location) time.Time {
 		d, _ := time.ParseInLocation(time.DateOnly, w.Key, loc)
 		return d.AddDate(0, 0, 1)
 	case WeekWindow:
-		var year, week int
-		fmt.Sscanf(w.Key, "%04d-W%02d", &year, &week)
+		year, week, ok := parseWeekKey(w.Key)
+		if !ok {
+			panic(fmt.Sprintf("week window %q: every window is made by ParseWindow or from a date", w.Key))
+		}
 		return weekStart(year, week, loc).AddDate(0, 0, 7)
 	}
 	panic("end of a session window: sessions close by idleness")

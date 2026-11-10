@@ -120,12 +120,6 @@ func (h Handler) spawn(args ...string) error {
 	return h.Spawn(args...)
 }
 
-func (h Handler) logErr(err error) {
-	if err != nil {
-		Logf(h.Home, "%v", err)
-	}
-}
-
 // Logf appends a line to <home>/hooks.log, best effort.
 func Logf(home, format string, args ...any) {
 	if os.MkdirAll(home, 0o755) != nil {

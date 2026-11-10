@@ -245,25 +245,6 @@ func claudeTranscript(t *testing.T, path, session, cwd string, msgs ...string) {
 	}
 }
 
-func codexTranscript(t *testing.T, path, session, cwd string, msgs ...string) {
-	t.Helper()
-	start := time.Now().Add(-time.Hour)
-	meta, _ := json.Marshal(map[string]any{"timestamp": start, "type": "session_meta", "payload": map[string]any{"id": session, "cwd": cwd, "source": "cli"}})
-	lines := []string{string(meta)}
-	for i, m := range msgs {
-		role, kind := "user", "input_text"
-		if i%2 == 1 {
-			role, kind = "assistant", "output_text"
-		}
-		line, _ := json.Marshal(map[string]any{"timestamp": start.Add(time.Duration(i+1) * time.Minute), "type": "response_item",
-			"payload": map[string]any{"type": "message", "role": role, "content": []map[string]any{{"type": kind, "text": m}}}})
-		lines = append(lines, string(line))
-	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 const deployGists = `{"gists":[{"gist":"Deploys go through the Buildkite pipeline ship-it.","line":1,"scope":"project"}]}`
 
 // answerAll sets the replies every pass gets unless a test changes one.

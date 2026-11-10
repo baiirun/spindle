@@ -259,10 +259,9 @@ func ingestPrompt(p Project, s transcript.Session, fresh []transcript.Message, s
 	var b strings.Builder
 	b.WriteString("## Session\n\n")
 	fmt.Fprintf(&b, "Folder: %s\n", orDefault(s.Cwd, p.Cwd))
-	switch {
-	case p.Name == "":
+	if p.Name == "" {
 		b.WriteString("Project: none linked to this folder\n")
-	default:
+	} else {
 		fmt.Fprintf(&b, "Project: %s", p.Name)
 		if d := p.Meta().Description; d != "" {
 			b.WriteString(" (" + d + ")")
